@@ -123,7 +123,7 @@ jobs:
 
       - name: Upload self-test log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: candidate-lib60870
           path: selftest.log
@@ -194,7 +194,7 @@ jobs:
 
       - name: Upload self-test log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: candidate-j60870
           path: selftest.log
