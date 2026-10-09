@@ -1,0 +1,5 @@
+.git
+.github
+reports
+**/target
+**/build

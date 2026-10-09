@@ -1,0 +1,10 @@
+The adapter programs in this directory link GPL-3.0 libraries (lib60870-C,
+j60870) and are licensed under the GNU General Public License, version 3 or
+(at your option) any later version.
+
+    SPDX-License-Identifier: GPL-3.0-or-later
+
+The full text is in ../licenses/GPL-3.0.txt.
+
+The rest of this repository is MIT-licensed; see ../LICENSE and
+../THIRD_PARTY_NOTICES.md.

@@ -1,0 +1,9 @@
+# Local build artifacts
+adapters/lib60870/build/
+adapters/openmuc/target/
+reports/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store

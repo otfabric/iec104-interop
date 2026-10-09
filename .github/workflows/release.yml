@@ -1,0 +1,125 @@
+name: Release
+run-name: "Release ${{ github.ref_name }}"
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write   # create the GitHub release
+  packages: write   # push to GHCR
+
+env:
+  REGISTRY: ghcr.io/otfabric
+  VERSION: ${{ github.ref_name }}
+
+jobs:
+  release:
+    name: Build, test, push, release
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install jsonschema
+
+      - name: Validate
+        run: |
+          scripts/check-versions.sh
+          python3 scripts/validate-fixtures.py --require-schema
+          want="interop_version: \"${VERSION#v}\""
+          grep -qF "$want" versions.yaml || { echo "::error::versions.yaml does not say $want"; exit 1; }
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      # The images that get published are tested first: build for the runner,
+      # run the contract and cross-stack self-tests against exactly that build.
+      - name: Build for the runner and self-test
+        run: |
+          make images
+          make documents
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push lib60870 (linux/amd64, linux/arm64)
+        id: lib60870
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: adapters/lib60870/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: ADAPTER_VERSION=${{ github.ref_name }}
+          tags: ${{ env.REGISTRY }}/iec104-interop-lib60870:${{ github.ref_name }}
+
+      - name: Push openmuc (linux/amd64, linux/arm64)
+        id: openmuc
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: adapters/openmuc/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: ADAPTER_VERSION=${{ github.ref_name }}
+          tags: ${{ env.REGISTRY }}/iec104-interop-openmuc:${{ github.ref_name }}
+
+      - name: Write manifest.json
+        run: |
+          arg() { sed -nE "s/^ARG $2=(.*)$/\1/p" "$1" | head -1; }
+          jq -n \
+            --arg version "${VERSION}" \
+            --arg commit "${GITHUB_SHA}" \
+            --arg lib_version "$(arg adapters/lib60870/Dockerfile LIB60870_VERSION)" \
+            --arg lib_sha "$(arg adapters/lib60870/Dockerfile LIB60870_SHA)" \
+            --arg j60870 "$(arg adapters/openmuc/Dockerfile J60870_VERSION)" \
+            --arg lib_digest "${{ steps.lib60870.outputs.digest }}" \
+            --arg openmuc_digest "${{ steps.openmuc.outputs.digest }}" \
+            '{
+              version: $version,
+              commit: $commit,
+              contract: "1.0",
+              fixtureSchema: "1.0",
+              platforms: ["linux/amd64", "linux/arm64"],
+              upstream: {
+                lib60870: { version: $lib_version, revision: $lib_sha },
+                j60870: { version: $j60870 }
+              },
+              images: {
+                lib60870: ("ghcr.io/otfabric/iec104-interop-lib60870@" + $lib_digest),
+                openmuc: ("ghcr.io/otfabric/iec104-interop-openmuc@" + $openmuc_digest)
+              }
+            }' > manifest.json
+          cat manifest.json
+          sha256sum manifest.json > checksums.txt
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          body: |
+            ## Images
+
+            | Image | Digest |
+            |-------|--------|
+            | `ghcr.io/otfabric/iec104-interop-lib60870:${{ github.ref_name }}` | `${{ steps.lib60870.outputs.digest }}` |
+            | `ghcr.io/otfabric/iec104-interop-openmuc:${{ github.ref_name }}` | `${{ steps.openmuc.outputs.digest }}` |
+
+            ## Pinning in a consumer
+
+            ```bash
+            IEC104_INTEROP_LIB60870_IMAGE=ghcr.io/otfabric/iec104-interop-lib60870@${{ steps.lib60870.outputs.digest }}
+            IEC104_INTEROP_OPENMUC_IMAGE=ghcr.io/otfabric/iec104-interop-openmuc@${{ steps.openmuc.outputs.digest }}
+            ```
+
+            `manifest.json` records the upstream revisions these images were built from. The images contain GPL-3.0 software; see `THIRD_PARTY_NOTICES.md`. Notes: `RELEASE.md`.
+          files: |
+            manifest.json
+            checksums.txt

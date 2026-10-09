@@ -1,0 +1,294 @@
+name: Upstream candidates
+run-name: "Candidate upstream probe by @${{ github.actor }}"
+
+# Resolves newer upstreams, builds candidate images, runs the self-tests on
+# them and publishes a pin-vs-latest decision table in the workflow Job
+# Summary. Release pins (Dockerfiles, pom.xml, versions.yaml) are never
+# mutated.
+#
+# A candidate is tested like a release: smoke test plus the cross-stack
+# self-test against the pinned other stack. Bugs of a specific upstream
+# version listed in tests/known-bugs.tsv are reported as known rather than as
+# failures, so one upstream bug does not hide whether everything else works.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  candidate-lib60870:
+    name: lib60870
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      pin: ${{ steps.resolve.outputs.pin }}
+      pin_tag: ${{ steps.resolve.outputs.pin_tag }}
+      latest_tag: ${{ steps.resolve.outputs.latest_tag }}
+      latest_tag_sha: ${{ steps.resolve.outputs.latest_tag_sha }}
+      tip_sha: ${{ steps.resolve.outputs.tip_sha }}
+      update: ${{ steps.resolve.outputs.update }}
+      tag_test: ${{ steps.tag.outcome }}
+      tag_result: ${{ steps.tag.outputs.result }}
+      tip_test: ${{ steps.tip.outcome }}
+      tip_result: ${{ steps.tip.outputs.result }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Resolve mz-automation/lib60870 pin vs upstream
+        id: resolve
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          repo = "https://github.com/mz-automation/lib60870.git"
+          dockerfile = Path("adapters/lib60870/Dockerfile").read_text()
+
+          def arg(name):
+              m = re.search(rf"^ARG {name}=(.+)$", dockerfile, re.M)
+              if not m:
+                  raise SystemExit(f"could not read ARG {name} from the lib60870 Dockerfile")
+              return m.group(1).strip()
+
+          pin = arg("LIB60870_SHA")
+          pin_tag = arg("LIB60870_VERSION")
+
+          tip = subprocess.check_output(["git", "ls-remote", repo, "HEAD"], text=True).split()[0]
+          # Without --refs an annotated tag also lists "<tag>^{}" with the commit it points to.
+          lines = subprocess.check_output(["git", "ls-remote", "--tags", repo], text=True).splitlines()
+
+          semver = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+          commits = {}
+          for line in lines:
+              sha, ref = line.split()
+              tag = ref.removeprefix("refs/tags/")
+              if tag.endswith("^{}"):
+                  commits[tag[:-3]] = sha          # the peeled commit wins
+              else:
+                  commits.setdefault(tag, sha)
+
+          latest_tag, latest_key = "", None
+          for tag in commits:
+              m = semver.match(tag)
+              if not m:
+                  continue
+              key = tuple(int(x) for x in m.groups())
+              if latest_key is None or key > latest_key:
+                  latest_key, latest_tag = key, tag
+          latest_tag_sha = commits.get(latest_tag, "")
+
+          # The rule is the latest release; the tip is information.
+          update = "yes" if latest_tag_sha and pin != latest_tag_sha else "no"
+
+          print(f"pin={pin}")
+          print(f"pin_tag={pin_tag}")
+          print(f"latest_tag={latest_tag}")
+          print(f"latest_tag_sha={latest_tag_sha}")
+          print(f"tip_sha={tip}")
+          print(f"update={update}")
+          print(f"resolved pin={pin_tag}@{pin[:12]} latest={latest_tag}@{latest_tag_sha[:12]} "
+                f"tip={tip[:12]} update={update}", file=sys.stderr)
+          PY
+
+      - name: Build and self-test at the latest release
+        id: tag
+        if: steps.resolve.outputs.update == 'yes'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          make candidate-lib60870 \
+            LIB60870_CANDIDATE_SHA="${{ steps.resolve.outputs.latest_tag_sha }}" \
+            LIB60870_CANDIDATE_NAME="${{ steps.resolve.outputs.latest_tag }}" 2>&1 | tee selftest.log
+          echo "result=$(grep -E '^\[interop\] [0-9]+ passed' selftest.log | tail -1 | sed 's/^\[interop\] //')" >> "$GITHUB_OUTPUT"
+
+      - name: Build and self-test at upstream HEAD
+        id: tip
+        if: steps.resolve.outputs.tip_sha != steps.resolve.outputs.pin && steps.resolve.outputs.tip_sha != steps.resolve.outputs.latest_tag_sha
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          make candidate-lib60870 \
+            LIB60870_CANDIDATE_SHA="${{ steps.resolve.outputs.tip_sha }}" \
+            LIB60870_CANDIDATE_NAME="HEAD" 2>&1 | tee selftest.log
+          echo "result=$(grep -E '^\[interop\] [0-9]+ passed' selftest.log | tail -1 | sed 's/^\[interop\] //')" >> "$GITHUB_OUTPUT"
+
+      - name: Upload self-test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-lib60870
+          path: selftest.log
+          if-no-files-found: ignore
+
+  candidate-j60870:
+    name: j60870
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      pin: ${{ steps.resolve.outputs.pin }}
+      latest: ${{ steps.resolve.outputs.latest }}
+      update: ${{ steps.resolve.outputs.update }}
+      known: ${{ steps.resolve.outputs.known }}
+      test: ${{ steps.test.outcome }}
+      result: ${{ steps.test.outputs.result }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Resolve org.openmuc:j60870 pin vs Maven Central
+        id: resolve
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import re
+          import sys
+          import urllib.request
+          from pathlib import Path
+
+          m = re.search(r"^ARG J60870_VERSION=(.+)$", Path("adapters/openmuc/Dockerfile").read_text(), re.M)
+          if not m:
+              raise SystemExit("could not read ARG J60870_VERSION from the openmuc Dockerfile")
+          pin = m.group(1).strip()
+
+          url = "https://repo1.maven.org/maven2/org/openmuc/j60870/maven-metadata.xml"
+          meta = urllib.request.urlopen(url, timeout=30).read().decode()
+          m = re.search(r"<release>([^<]+)</release>", meta)
+          if not m:
+              raise SystemExit("could not read the latest j60870 release from Maven Central")
+          latest = m.group(1)
+          update = "yes" if pin != latest else "no"
+
+          # Bugs this repository already knows about in the latest release.
+          known = []
+          for line in Path("tests/known-bugs.tsv").read_text().splitlines():
+              cols = line.split("\t")
+              if len(cols) == 4 and cols[0] == "openmuc" and cols[1] == latest:
+                  known.append(cols[3])
+
+          print(f"pin={pin}")
+          print(f"latest={latest}")
+          print(f"update={update}")
+          print(f"known={'; '.join(known)}")
+          print(f"resolved pin={pin} latest={latest} update={update} known={len(known)}", file=sys.stderr)
+          PY
+
+      - name: Build and self-test at the latest release
+        id: test
+        if: steps.resolve.outputs.update == 'yes'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          make candidate-openmuc J60870_CANDIDATE="${{ steps.resolve.outputs.latest }}" 2>&1 | tee selftest.log
+          echo "result=$(grep -E '^\[interop\] [0-9]+ passed' selftest.log | tail -1 | sed 's/^\[interop\] //')" >> "$GITHUB_OUTPUT"
+
+      - name: Upload self-test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-j60870
+          path: selftest.log
+          if-no-files-found: ignore
+
+  summary:
+    name: Decision table
+    runs-on: ubuntu-latest
+    needs: [candidate-lib60870, candidate-j60870]
+    if: always()
+    steps:
+      - name: Write pin-vs-latest summary
+        env:
+          LIB_PIN: ${{ needs.candidate-lib60870.outputs.pin }}
+          LIB_PIN_TAG: ${{ needs.candidate-lib60870.outputs.pin_tag }}
+          LIB_LATEST_TAG: ${{ needs.candidate-lib60870.outputs.latest_tag }}
+          LIB_LATEST_TAG_SHA: ${{ needs.candidate-lib60870.outputs.latest_tag_sha }}
+          LIB_TIP: ${{ needs.candidate-lib60870.outputs.tip_sha }}
+          LIB_UPDATE: ${{ needs.candidate-lib60870.outputs.update }}
+          LIB_TAG_TEST: ${{ needs.candidate-lib60870.outputs.tag_test }}
+          LIB_TAG_RESULT: ${{ needs.candidate-lib60870.outputs.tag_result }}
+          LIB_TIP_TEST: ${{ needs.candidate-lib60870.outputs.tip_test }}
+          LIB_TIP_RESULT: ${{ needs.candidate-lib60870.outputs.tip_result }}
+          J_PIN: ${{ needs.candidate-j60870.outputs.pin }}
+          J_LATEST: ${{ needs.candidate-j60870.outputs.latest }}
+          J_UPDATE: ${{ needs.candidate-j60870.outputs.update }}
+          J_KNOWN: ${{ needs.candidate-j60870.outputs.known }}
+          J_TEST: ${{ needs.candidate-j60870.outputs.test }}
+          J_RESULT: ${{ needs.candidate-j60870.outputs.result }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import os
+
+          def env(name, default=""):
+              return os.environ.get(name, "") or default
+
+          def short(sha, n=12):
+              return sha[:n] if sha else "?"
+
+          def tested(outcome, result, same_as_pin):
+              if outcome in ("", "skipped"):
+                  return "same as pin" if same_as_pin else "not run"
+              text = f"`{outcome}`"
+              return f"{text}<br>{result}" if result else text
+
+          lib_pin, lib_pin_tag = env("LIB_PIN"), env("LIB_PIN_TAG")
+          lib_tag, lib_tag_sha, lib_tip = env("LIB_LATEST_TAG"), env("LIB_LATEST_TAG_SHA"), env("LIB_TIP")
+          lib_update = env("LIB_UPDATE", "?")
+          j_pin, j_latest, j_update = env("J_PIN", "?"), env("J_LATEST", "?"), env("J_UPDATE", "?")
+          j_known = env("J_KNOWN")
+
+          print("## Upstream candidate report")
+          print()
+          print("Release pins were **not** modified. Use this table to decide whether to bump.")
+          print()
+          print("| Stack | Kind | Release pin | Latest upstream | Candidate self-test | Update? |")
+          print("|---|---|---|---|---|---|")
+          print(
+              f"| [lib60870](https://github.com/mz-automation/lib60870) | git SHA | "
+              f"`{lib_pin_tag}` (`{short(lib_pin)}`) | `{lib_tag}` (`{short(lib_tag_sha)}`) | "
+              f"{tested(env('LIB_TAG_TEST'), env('LIB_TAG_RESULT'), lib_update == 'no')} | **{lib_update}** |"
+          )
+          print(
+              f"| lib60870, default branch | git SHA | | HEAD `{short(lib_tip)}` | "
+              f"{tested(env('LIB_TIP_TEST'), env('LIB_TIP_RESULT'), lib_tip in (lib_pin, lib_tag_sha))} | information |"
+          )
+          print(
+              f"| [j60870](https://www.openmuc.org/iec-60870-5-104/) | Maven Central | "
+              f"`{j_pin}` | `{j_latest}` | "
+              f"{tested(env('J_TEST'), env('J_RESULT'), j_update == 'no')} | **{j_update}** |"
+          )
+          print()
+          if j_known:
+              print("### Known bugs of the latest release")
+              print()
+              print(f"- j60870 `{j_latest}`: {j_known}")
+              print()
+              print("A candidate self-test that is `success` with *known upstream bugs* in its result "
+                    "means everything else passes on that version. See docs/COMPATIBILITY.md for why "
+                    "the pin stays behind.")
+              print()
+          print("### Pin locations")
+          print()
+          print("- lib60870: `adapters/lib60870/Dockerfile` (`LIB60870_VERSION`, `LIB60870_SHA`), mirrored in `versions.yaml`")
+          print("- j60870: `adapters/openmuc/Dockerfile` (`J60870_VERSION`) and `adapters/openmuc/pom.xml`, mirrored in `versions.yaml`")
+          print()
+          print("### How to read this")
+          print()
+          print("- **Update? = yes** means the pin is not the latest upstream release.")
+          print("- **Candidate self-test** builds the adapter on that version and runs the smoke test and the "
+                "cross-stack self-test against the pinned other stack. `success`: the pin can move. "
+                "`failure`: read the uploaded log before bumping.")
+          print("- A `failure` saying *known bug ... did not reproduce* is good news: the upstream bug is fixed. "
+                "Remove the entry from `tests/known-bugs.tsv` and move the pin.")
+          print("- Bump deliberately, after reading the upstream changelog, and record the change in "
+                "`docs/COMPATIBILITY.md` and `RELEASE.md`.")
+          PY

@@ -1,0 +1,31 @@
+# Reference servers for local work. Ports are published on loopback only:
+# these are unauthenticated IEC 60870-5-104 stations and must not be reachable
+# from a plant network.
+#
+#   docker compose up -d --wait        # both servers, waits for readiness
+#   docker compose down
+#
+# IEC104_INTEROP_VERSION selects the image tag (default: dev, the local build).
+
+x-server: &server
+  command: ["server", "--fixture", "/fixtures/${IEC104_INTEROP_FIXTURE:-baseline}/fixture.json"]
+  healthcheck:
+    test: ["CMD", "test", "-f", "/run/iec104-interop/ready"]
+    interval: 2s
+    timeout: 2s
+    retries: 15
+    start_period: 10s
+  stop_grace_period: 10s
+
+services:
+  lib60870:
+    <<: *server
+    image: ghcr.io/otfabric/iec104-interop-lib60870:${IEC104_INTEROP_VERSION:-dev}
+    ports:
+      - "127.0.0.1:2404:2404"
+
+  openmuc:
+    <<: *server
+    image: ghcr.io/otfabric/iec104-interop-openmuc:${IEC104_INTEROP_VERSION:-dev}
+    ports:
+      - "127.0.0.1:2405:2404"

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/otfabric/iec104-interop/schemas/capabilities.schema.json",
+  "title": "iec104-interop capability document",
+  "description": "Output of 'print-capabilities'. See docs/CAPABILITIES.md.",
+  "type": "object",
+  "required": ["schemaVersion", "adapter", "adapterVersion", "protocol", "upstream", "roles", "features",
+               "pointTypes", "commandTypes", "clientOperations"],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "adapter": { "type": "string", "pattern": "^[a-z0-9]+$" },
+    "adapterVersion": { "type": "string", "minLength": 1 },
+    "protocol": { "const": "iec60870-5-104" },
+    "upstream": {
+      "type": "object",
+      "required": ["name", "version", "revision", "license", "language", "independentEngine"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "revision": { "type": "string" },
+        "license": { "type": "string" },
+        "language": { "type": "string" },
+        "independentEngine": { "type": "boolean" }
+      }
+    },
+    "roles": {
+      "type": "object",
+      "required": ["server", "client"],
+      "properties": { "server": { "type": "boolean" }, "client": { "type": "boolean" } }
+    },
+    "features": {
+      "type": "object",
+      "required": ["generalInterrogation", "groupInterrogation", "counterInterrogation", "read", "clockSync",
+                   "testCommand", "directCommands", "selectBeforeOperate", "commandDeactivation",
+                   "timeTaggedCommands", "spontaneousOnCommand", "apciParameters", "multipleConnections",
+                   "pointQualityOnBitstring", "tls", "fileTransfer"],
+      "additionalProperties": { "type": "boolean" }
+    },
+    "pointTypes": { "type": "array", "items": { "type": "string", "pattern": "^M_[A-Z]{2}_[A-Z]{2}_1$" } },
+    "commandTypes": { "type": "array", "items": { "type": "string", "pattern": "^C_[A-Z]{2}_[A-Z]{2}_1$" } },
+    "clientOperations": { "type": "array", "items": { "type": "string" } }
+  }
+}
