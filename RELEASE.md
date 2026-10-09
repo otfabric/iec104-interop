@@ -4,7 +4,7 @@
 
 1. `make ci` on the commit to release.
 2. Update `interop_version` in `versions.yaml` and the notes below.
-3. Tag `vX.Y.Z` and push the tag. The release workflow validates, builds both images for linux/amd64 and linux/arm64 with `ADAPTER_VERSION` set to the tag, runs the smoke and cross-stack self-tests on the built images, pushes them to GHCR and creates the GitHub release with `manifest.json` (upstream pins and image digests) and `checksums.txt`.
+3. Tag `vX.Y.Z` and push the tag. The release workflow runs one job on an amd64 runner and one on an arm64 runner: each validates, builds every image natively with `ADAPTER_VERSION` set to the tag, runs the smoke and cross-stack self-tests on those images and pushes exactly them to GHCR as `<image>:vX.Y.Z-amd64` and `-arm64`. A last job joins the two into the multi-arch `<image>:vX.Y.Z` and creates the GitHub release with `manifest.json` (upstream pins and the digests of the multi-arch images) and `checksums.txt`.
 4. Consumers pin the digests from `manifest.json`.
 
 Tags are immutable. A fix is a new version.
@@ -17,7 +17,50 @@ Tags are immutable. A fix is a new version.
 
 ---
 
-## Unreleased (planned v0.1.0)
+## Unreleased (planned v0.2.0)
+
+## Summary
+
+A third independent reference implementation, and file transfer. Container
+contract 1.1: additions only, documents keep `schemaVersion` `"1.0"`.
+
+## Changes
+
+### Added
+
+- **`wendy512` adapter** — [wendy512/iec104](https://github.com/wendy512/iec104) v1.0.4 on its engine [go-iecp5](https://github.com/wendy512/go-iecp5) v1.2.6, Go, client and server. Image `ghcr.io/otfabric/iec104-interop-wendy512`. It has the eight operations of contract 1.0; its upstream has no time-tagged commands, no file transfer and no STARTDT/STOPDT notification on the server, and the image declares those features false.
+- **File transfer in monitor direction** — `files` in the fixture format (content defined by a rule, not stored), two files in the baseline fixture, the `file-get` client operation with a `file` object in its result (length, octets received, sections, SHA-256), ASDU documents for F_FR/F_SR/F_SC/F_LS/F_AF/F_SG, and the `file-transfer` server event. Served by the lib60870 adapter; downloaded by the lib60870 and openmuc adapters.
+- **Features** `fileServer`, `fileClient` and `dataTransferEvents` in the capability document, and an optional `upstream.engine`.
+- **Capability-aware self-tests** — a case in `tests/cases.tsv` names the features it needs from the server and from the client and is skipped, and counted as skipped, for a pairing that lacks one. Every time-tagged command case has a twin without time tag.
+- **Upstream candidates workflow** probes wendy512/iec104 and go-iecp5 as well; `make candidate-wendy512` does it locally.
+- `compose.yaml` and `make run-wendy512` serve the third station on 127.0.0.1:2406.
+
+### Changed
+
+- `fileTransfer` is now true for lib60870 and openmuc (it was false for both in v0.1.0).
+- `make interop` covers nine pairings: 643 checks, 62 skipped for undeclared capabilities.
+- The release `manifest.json` says `contract: "1.1"` and lists the third image and its upstream versions.
+
+### Upstream notes
+
+- go-iecp5 v1.2.6 drops the command types with CP56Time2a and F_SG_NA_1 on reception; its handlers for system commands receive an ASDU whose address is already consumed; its refusals carry no P/N bit; its client reconnects after a lost connection whatever `SetAutoReconnect` says. The adapter works around what it can and declares the rest. Details in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+- The default branch of go-iecp5 declares another module path and cannot be built; only its release tags are probed.
+- j60870 stays on 1.7.2 for the reason given under v0.1.0.
+
+### For consumers
+
+- Nothing changes for a consumer of the two existing images unless it asserted `fileTransfer == false`.
+- A consumer that iterates over reference images should read `print-capabilities` and skip time-tagged commands and the data-transfer events for `wendy512`.
+
+### Not in this release
+
+- Eclipse OneOFour and Fraunhofer iec104-python adapters.
+- File transfer in control direction, the file directory, a second file server.
+- TLS, interrogation groups, redundancy.
+
+---
+
+## v0.1.0
 
 **Date:** 2026-10-09
 
@@ -50,4 +93,3 @@ server, behind container contract 1.0.
 
 - wendy512/iec104, Eclipse OneOFour and Fraunhofer iec104-python adapters.
 - TLS, file transfer, interrogation groups, redundancy.
-- Published images: this version has only been built and tested locally (self-tests on linux/arm64; linux/amd64 builds under emulation).

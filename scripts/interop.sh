@@ -41,7 +41,8 @@ network_up
 : > "${WORK}/active"
 : > "${WORK}/reproduced"
 for adapter in "${ADAPTERS[@]}"; do
-    version=$(docker run --rm "$(image_of "${adapter}")" print-capabilities 2>/dev/null | jq -r '.upstream.version')
+    docker run --rm "$(image_of "${adapter}")" print-capabilities > "${WORK}/caps-${adapter}.json" 2>/dev/null
+    version=$(jq -r '.upstream.version' "${WORK}/caps-${adapter}.json")
     log "${adapter}: upstream ${version}"
     while IFS=$'\t' read -r bug_adapter bug_version bug_regex bug_text; do
         [[ -z "${bug_adapter}" || "${bug_adapter}" == \#* ]] && continue
@@ -51,6 +52,29 @@ for adapter in "${ADAPTERS[@]}"; do
         fi
     done < "${KNOWN_BUGS}"
 done
+
+# has <adapter> <feature>: the adapter declares the feature.
+has() { jq -e --arg f "$2" '.features[$f] == true' "${WORK}/caps-$1.json" >/dev/null 2>&1; }
+
+# has_role <adapter> <server|client>
+has_role() { jq -e --arg r "$2" '.roles[$r] == true' "${WORK}/caps-$1.json" >/dev/null 2>&1; }
+
+# supported <client> <server> <needs>: the pairing declares every feature in
+# the comma-separated list of "server:<feature>" and "client:<feature>".
+supported() {
+    local need side feature
+    has_role "$1" client && has_role "$2" server || return 1
+    [[ "$3" == "-" ]] && return 0
+    for need in ${3//,/ }; do
+        side="${need%%:*}"; feature="${need#*:}"
+        if [[ "${side}" == "server" ]]; then has "$2" "${feature}" || return 1
+        else has "$1" "${feature}" || return 1; fi
+    done
+    return 0
+}
+
+SKIPPED=0
+skip() { SKIPPED=$((SKIPPED + 1)); [[ -n "${VERBOSE:-}" ]] && log "skip: $*"; return 0; }
 
 # known_bug <client> <server> <operation>: prints the description of a known
 # bug that may affect this pairing and operation, if there is one.
@@ -89,13 +113,17 @@ keep() {  # keep <label> <document>
 
 log "adapters: ${ADAPTERS[*]} (${VERSION})"
 n=0
-while IFS=$'\t' read -r state want_exit want_summary operation; do
+while IFS=$'\t' read -r state want_exit want_summary needs operation; do
     [[ -z "${state}" || "${state}" == \#* ]] && continue
     n=$((n + 1))
     reference="" reference_pair=""
     for server in "${ADAPTERS[@]}"; do
         for client in "${ADAPTERS[@]}"; do
             pair="${client}->${server}"
+            if ! supported "${client}" "${server}" "${needs}"; then
+                skip "${pair}: ${operation} (needs ${needs})"
+                continue
+            fi
             if [[ "${state}" == "rw" ]]; then
                 name=$(start_server "${server}"); wait_ready "${name}" || exit 1
             else
@@ -214,6 +242,21 @@ for server in "${ADAPTERS[@]}"; do
         else fail "${pair}: only ${good} of 3 concurrent sessions returned the fixture"; fi
     done
 done
+
+# ---- values: a downloaded file is the fixture's ----
+while IFS=$'\t' read -r file_ioa file_name file_size; do
+    want_hash=$(python3 -c 'import hashlib,sys; ioa,size=int(sys.argv[1]),int(sys.argv[2]); print(hashlib.sha256(bytes((i+ioa)%251 for i in range(size))).hexdigest())' "${file_ioa}" "${file_size}")
+    for server in "${ADAPTERS[@]}"; do
+        for client in "${ADAPTERS[@]}"; do
+            pair="${client}->${server}"
+            supported "${client}" "${server}" "server:fileServer,client:fileClient" || { skip "${pair}: file ${file_ioa}"; continue; }
+            got=$(run_client "${client}" file-get --ioa "${file_ioa}" --name "${file_name}" --host "$(shared_server "${server}")" \
+                | jq -c '[.file.length, .file.received, .file.sha256]')
+            if [[ "${got}" == "[${file_size},${file_size},\"${want_hash}\"]" ]]; then ok "${pair}: file ${file_ioa} has the fixture's content"
+            else fail "${pair}: file ${file_ioa}: got ${got}, want ${file_size} octets with sha256 ${want_hash}"; fi
+        done
+    done
+done < <(jq -r '.files[]? | [.ioa, .name, .size] | @tsv' "${FIXTURE}")
 
 # ---- a known bug that no longer shows is a stale entry ----
 while IFS=$'\t' read -r bug_adapter bug_regex bug_text; do

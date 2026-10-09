@@ -12,7 +12,7 @@ self-test covers between the reference stacks.
 | ASDU | Types of the fixture format; cause, P/N, common address, originator; SQ = 0 | yes |
 | Monitoring | `M_SP`, `M_DP`, `M_ST`, `M_BO`, `M_ME_NA/NB/NC`, `M_IT`, each with and without CP56Time2a; quality flags | yes |
 | General interrogation | Activation, data, termination; broadcast address; unknown station; unsupported group | yes |
-| Commands | `C_SC`, `C_DC`, `C_RC`, `C_SE_NA/NB/NC` with and without time tag; direct, select, select-and-execute, deactivation; refusals | yes |
+| Commands | `C_SC`, `C_DC`, `C_RC`, `C_SE_NA/NB/NC` with and without time tag; direct, select, select-and-execute, deactivation; refusals | yes; with time tag between lib60870 and openmuc |
 | Spontaneous reporting | Time-tagged report of the target after a command (causes 3 and 11) | yes |
 | Time synchronization | `C_CS_NA_1`, and the received time in the server's event stream | yes |
 | Counter interrogation | General request, read; unsupported qualifier refused | yes |
@@ -23,7 +23,7 @@ self-test covers between the reference stacks.
 | APCI timers | `t3` and `t1` observable through the idle test; `t0` on the client | idle test only |
 | Extended types | none beyond the above | no |
 | Redundancy | no: reports go to the commanding connection only | no |
-| File transfer | no | no |
+| File transfer | Download (monitor direction): select, call, sections, segments, checksums, acknowledgements; refusal of an unknown file. Server: lib60870. Client: lib60870, openmuc | yes, between those |
 | Secure transport | no | no |
 
 ## Not provided on purpose
@@ -34,6 +34,15 @@ fault injector; a library tests these with scripted peers of its own.
 
 ## Per adapter
 
-Both published adapters cover every row above identically, with one
-difference: OpenMUC cannot run with the idle test disabled (`--t3 0`). See
-[docs/CAPABILITIES.md](docs/CAPABILITIES.md).
+| | lib60870 | openmuc | wendy512 |
+|---|:---:|:---:|:---:|
+| Everything above except the rows below | yes | yes | yes |
+| Commands with time tag | yes | yes | no |
+| File transfer, server | yes | no | no |
+| File transfer, client | yes | yes | no |
+| `data-transfer-started` / `-stopped` server events | yes | yes | no |
+| Idle test disabled (`--t3 0`) | yes | no | no |
+
+The reasons are in [docs/CAPABILITIES.md](docs/CAPABILITIES.md) and
+[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). Read them from the image
+(`print-capabilities`) rather than from this table.

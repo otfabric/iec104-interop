@@ -2,6 +2,7 @@
 #include "common.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 
 static void addTime(cJSON* o, CP56Time2a t)
 {
@@ -142,6 +143,46 @@ static bool objectToJson(cJSON* o, InformationObject io, IEC60870_5_TypeID type)
             SetpointCommandShort_getQL((SetpointCommandShort)io));
         return true;
 
+    case F_FR_NA_1:
+        cJSON_AddNumberToObject(o, "nof", FileReady_getNOF((FileReady)io));
+        cJSON_AddNumberToObject(o, "lof", FileReady_getLengthOfFile((FileReady)io));
+        cJSON_AddNumberToObject(o, "frq", FileReady_getFRQ((FileReady)io));
+        return true;
+    case F_SR_NA_1:
+        cJSON_AddNumberToObject(o, "nof", SectionReady_getNOF((SectionReady)io));
+        cJSON_AddNumberToObject(o, "nos", SectionReady_getNameOfSection((SectionReady)io));
+        cJSON_AddNumberToObject(o, "lof", SectionReady_getLengthOfSection((SectionReady)io));
+        cJSON_AddNumberToObject(o, "srq", SectionReady_getSRQ((SectionReady)io));
+        return true;
+    case F_SC_NA_1:
+        cJSON_AddNumberToObject(o, "nof", FileCallOrSelect_getNOF((FileCallOrSelect)io));
+        cJSON_AddNumberToObject(o, "nos", FileCallOrSelect_getNameOfSection((FileCallOrSelect)io));
+        cJSON_AddNumberToObject(o, "scq", FileCallOrSelect_getSCQ((FileCallOrSelect)io));
+        return true;
+    case F_LS_NA_1:
+        cJSON_AddNumberToObject(o, "nof", FileLastSegmentOrSection_getNOF((FileLastSegmentOrSection)io));
+        cJSON_AddNumberToObject(o, "nos", FileLastSegmentOrSection_getNameOfSection((FileLastSegmentOrSection)io));
+        cJSON_AddNumberToObject(o, "lsq", FileLastSegmentOrSection_getLSQ((FileLastSegmentOrSection)io));
+        cJSON_AddNumberToObject(o, "chs", FileLastSegmentOrSection_getCHS((FileLastSegmentOrSection)io));
+        return true;
+    case F_AF_NA_1:
+        cJSON_AddNumberToObject(o, "nof", FileACK_getNOF((FileACK)io));
+        cJSON_AddNumberToObject(o, "nos", FileACK_getNameOfSection((FileACK)io));
+        cJSON_AddNumberToObject(o, "afq", FileACK_getAFQ((FileACK)io));
+        return true;
+    case F_SG_NA_1: {
+        int n = FileSegment_getLengthOfSegment((FileSegment)io);
+        uint8_t* data = FileSegment_getSegmentData((FileSegment)io);
+        char* hex = malloc((size_t)n * 2 + 1);
+        for (int i = 0; i < n; i++)
+            snprintf(hex + 2 * i, 3, "%02x", data[i]);
+        hex[2 * n] = 0;
+        cJSON_AddNumberToObject(o, "nof", FileSegment_getNOF((FileSegment)io));
+        cJSON_AddNumberToObject(o, "nos", FileSegment_getNameOfSection((FileSegment)io));
+        cJSON_AddStringToObject(o, "data", hex);
+        free(hex);
+        return true;
+    }
     case M_EI_NA_1:
         cJSON_AddNumberToObject(o, "coi", EndOfInitialization_getCOI((EndOfInitialization)io));
         return true;

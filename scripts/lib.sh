@@ -94,10 +94,9 @@ KNOWN=0
 
 finish() {
     echo "" >&2
-    if [[ "${KNOWN}" -gt 0 ]]; then
-        log "${PASS} passed, ${FAIL} failed, ${KNOWN} known upstream bugs"
-    else
-        log "${PASS} passed, ${FAIL} failed"
-    fi
+    local extra=""
+    [[ "${KNOWN}" -gt 0 ]] && extra="${extra}, ${KNOWN} known upstream bugs"
+    [[ "${SKIPPED:-0}" -gt 0 ]] && extra="${extra}, ${SKIPPED} skipped (capability not declared)"
+    log "${PASS} passed, ${FAIL} failed${extra}"
     [[ "${FAIL}" -eq 0 ]]
 }

@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # iec104-interop adapter for OpenMUC j60870.
 #
 # Build from the repository root:
@@ -9,13 +8,17 @@
 # version is pinned below (J60870_VERSION) and mirrored in pom.xml and
 # versions.yaml.
 
+# Where the base images come from. They are pinned by digest, so a mirror of
+# Docker Hub serves exactly the same images; CI uses one to stay clear of
+# Docker Hub's pull rate limit (see the Makefile).
+ARG BASE_REGISTRY=docker.io/library
 ARG MAVEN_DIGEST=sha256:93b8a14ea2f412782e4e842651273b4d903e35cc496284f178fbbe2d67d00976
 ARG JRE_DIGEST=sha256:d9a39a23634650173f1e2bbc176227af9728587ecf0f4b62d53e9355cd7a19ab
 
 # ---------------------------------------------------------------------------
 # Stage 1: build the adapter jar (j60870 and Gson shaded in)
 # ---------------------------------------------------------------------------
-FROM maven:3.9-eclipse-temurin-25@${MAVEN_DIGEST} AS build
+FROM ${BASE_REGISTRY}/maven:3.9-eclipse-temurin-25@${MAVEN_DIGEST} AS build
 
 # The release pin. "make candidate-openmuc" overrides it to try another
 # upstream version without touching the pin.
@@ -31,7 +34,7 @@ RUN mvn -B -q -o -Dj60870.version="${J60870_VERSION}" package -DskipTests
 # ---------------------------------------------------------------------------
 # Stage 2: runtime
 # ---------------------------------------------------------------------------
-FROM eclipse-temurin:25-jre-noble@${JRE_DIGEST} AS runtime
+FROM ${BASE_REGISTRY}/eclipse-temurin:25-jre-noble@${JRE_DIGEST} AS runtime
 
 ARG ADAPTER_VERSION=dev
 

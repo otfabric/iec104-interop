@@ -273,6 +273,29 @@ final class Fixture {
                 fx.commands.add(c);
             }
         }
+
+        // Files are validated like everywhere else, although this adapter's
+        // server does not serve them (capability fileServer is false).
+        JsonElement files = root.get("files");
+        if (files != null) {
+            if (!files.isJsonArray()) {
+                throw new InvalidException("files must be an array");
+            }
+            Set<Integer> seen = new java.util.HashSet<>();
+            for (JsonElement item : files.getAsJsonArray()) {
+                JsonObject o = item.isJsonObject() ? item.getAsJsonObject() : new JsonObject();
+                if (!inRange(o.get("ioa"), 1, 0xFFFFFF) || !inRange(o.get("name"), 1, 255)
+                        || !inRange(o.get("size"), 1, 65536) || !inRange(o.get("sectionSize"), 1, 65536)
+                        || o.get("sectionSize").getAsInt() > o.get("size").getAsInt()) {
+                    throw new InvalidException("file " + seen.size()
+                            + ": needs ioa, name (1..255), size (1..65536) and sectionSize (1..size)");
+                }
+                int ioa = o.get("ioa").getAsInt();
+                if (!seen.add(ioa) || fx.point(ioa) != null || fx.command(ioa) != null) {
+                    throw new InvalidException("file " + ioa + ": duplicate information object address");
+                }
+            }
+        }
         return fx;
     }
 }

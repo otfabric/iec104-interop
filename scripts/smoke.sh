@@ -100,9 +100,15 @@ run_client "${ADAPTER}" clock-sync --time 2026-10-09T15:35:12.345Z --host "${nam
 sleep 0.3
 events=$(docker logs "${name}" 2>/dev/null)
 if grep -v '^{' <<<"${events}" | grep -q .; then fail "server stdout has lines that are not JSON"; else ok "server stdout is JSON Lines only"; fi
+# An adapter whose library has no hook for STARTDT says so in its capabilities.
+if jq -e '.features.dataTransferEvents == true' <<<"${caps}" >/dev/null 2>&1; then
+    transfer='.event == "data-transfer-started" and (.peer | type == "string")'
+else
+    transfer='.event == "connection-opened"'
+fi
 for want in \
     '.event == "connection-opened" and (.peer | type == "string")' \
-    '.event == "data-transfer-started"' \
+    "${transfer}" \
     '.event == "interrogation" and .qoi == 20 and .commonAddress == 1 and .accepted' \
     '.event == "command" and .type == "C_SC_NA_1" and .ioa == 500 and .value == false and .select == false and .cot == 6 and .outcome == "executed"' \
     '.event == "clock-sync" and .time == "2026-10-09T15:35:12.345Z"' \

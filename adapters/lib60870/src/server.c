@@ -4,9 +4,11 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
+#include "cs101_file_service.h"
 #include "hal_thread.h"
 #include "hal_time.h"
 
@@ -336,6 +338,72 @@ static bool asduHandler(void* parameter, IMasterConnection connection, CS101_ASD
     return true;
 }
 
+/* ---- files: served by lib60870's own file server ---- */
+
+static struct sCS101_IFileProvider* providers;
+
+static FileSpec* specOf(CS101_IFileProvider self) { return (FileSpec*)self->object; }
+
+static uint64_t fileDate(CS101_IFileProvider self)
+{
+    (void)self;
+    return 0;
+}
+
+static int fileSize(CS101_IFileProvider self) { return specOf(self)->size; }
+
+/* sectionNumber counts from 0; a size of 0 says there is no such section. */
+static int sectionSize(CS101_IFileProvider self, int sectionNumber)
+{
+    FileSpec* f = specOf(self);
+    int left = f->size - sectionNumber * f->sectionSize;
+    if (sectionNumber < 0 || left <= 0)
+        return 0;
+    return left < f->sectionSize ? left : f->sectionSize;
+}
+
+static bool segmentData(CS101_IFileProvider self, int sectionNumber, int offset, int size, uint8_t* data)
+{
+    FileSpec* f = specOf(self);
+    int base = sectionNumber * f->sectionSize + offset;
+    if (base < 0 || base + size > f->size)
+        return false;
+    for (int i = 0; i < size; i++)
+        data[i] = fileOctet(f->ioa, base + i);
+    return true;
+}
+
+static void transferComplete(CS101_IFileProvider self, bool success)
+{
+    cJSON* e = event("file-transfer");
+    cJSON_AddNumberToObject(e, "ioa", specOf(self)->ioa);
+    cJSON_AddNumberToObject(e, "name", specOf(self)->name);
+    cJSON_AddBoolToObject(e, "success", success);
+    emitJson(e);
+}
+
+static CS101_IFileProvider nextFile(void* parameter, CS101_IFileProvider after)
+{
+    (void)parameter;
+    int i = after == NULL ? 0 : (int)(after - providers) + 1;
+    return i < fx.fileCount ? &providers[i] : NULL;
+}
+
+/* errCode 1: unknown common address, 2: unknown information object address. */
+static CS101_IFileProvider getFile(void* parameter, int ca, int ioa, uint16_t nof, int* errCode)
+{
+    (void)parameter;
+    if (ca != fx.commonAddress) {
+        *errCode = 1;
+        return NULL;
+    }
+    for (int i = 0; i < fx.fileCount; i++)
+        if (fx.files[i].ioa == ioa && fx.files[i].name == nof)
+            return &providers[i];
+    *errCode = 2;
+    return NULL;
+}
+
 int runServer(Args* args)
 {
     const char* fixturePath = argString(args, "--fixture", DEFAULT_FIXTURE);
@@ -374,6 +442,26 @@ int runServer(Args* args)
     CS104_Slave_setClockSyncHandler(slave, clockSyncHandler, NULL);
     CS104_Slave_setASDUHandler(slave, asduHandler, NULL);
 
+    CS101_FileServer fileServer = NULL;
+    struct sCS101_FilesAvailable filesAvailable = { nextFile, getFile, NULL };
+    if (fx.fileCount > 0) {
+        providers = calloc((size_t)fx.fileCount, sizeof(*providers));
+        for (int i = 0; i < fx.fileCount; i++) {
+            providers[i].ca = fx.commonAddress;
+            providers[i].ioa = fx.files[i].ioa;
+            providers[i].nof = (uint8_t)fx.files[i].name;
+            providers[i].object = &fx.files[i];
+            providers[i].getFileDate = fileDate;
+            providers[i].getFileSize = fileSize;
+            providers[i].getSectionSize = sectionSize;
+            providers[i].getSegmentData = segmentData;
+            providers[i].transferComplete = transferComplete;
+        }
+        fileServer = CS101_FileServer_create(CS104_Slave_getAppLayerParameters(slave));
+        CS101_FileServer_setFilesAvailableIfc(fileServer, &filesAvailable);
+        CS104_Slave_addPlugin(slave, CS101_FileServer_getSlavePlugin(fileServer));
+    }
+
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = onSignal;
@@ -409,6 +497,8 @@ int runServer(Args* args)
     unlink(readyFile);
     CS104_Slave_stop(slave);
     CS104_Slave_destroy(slave);
+    if (fileServer != NULL)
+        CS101_FileServer_destroy(fileServer);
     emitJson(event("stopped"));
     return EXIT_OK;
 }

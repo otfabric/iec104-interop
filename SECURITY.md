@@ -8,7 +8,7 @@ If you discover a security vulnerability in `iec104-interop`, please report it r
 
 Instead, please email **security@otfabric.com**, or open a private advisory on GitHub (the [Security](https://github.com/otfabric/iec104-interop/security) tab → **Advisories** → **Report a vulnerability**), with a description, steps to reproduce and the affected image tag or digest.
 
-Vulnerabilities in the bundled implementations themselves (lib60870-C, j60870) belong upstream; report them there, and tell us so that the pin can be moved.
+Vulnerabilities in the bundled implementations themselves (lib60870-C, j60870, wendy512/iec104, go-iecp5) belong upstream; report them there, and tell us so that the pin can be moved.
 
 ## Supported Versions
 
@@ -37,5 +37,6 @@ The images run **unauthenticated, unencrypted IEC 60870-5-104 stations** that ac
 
 ### Supply chain
 
-- Upstream sources are fetched during the image build from GitHub (lib60870) and Maven Central (j60870, Gson) at pinned versions; the lib60870 checkout is verified against the pinned commit hash
+- Upstream sources are fetched during the image build from GitHub (lib60870), Maven Central (j60870, Gson) and the Go module proxy (wendy512/iec104, go-iecp5) at pinned versions; the lib60870 checkout is verified against the pinned commit hash and the Go modules against the checksums in `go.sum`
+- Base images are pinned by digest. CI and the release workflow pull them from `mirror.gcr.io/library`, a mirror of Docker Hub's official images, because anonymous Docker Hub pulls are rate limited; the digest makes the source irrelevant to the content (`BASE_REGISTRY`, default `docker.io/library`). The build tooling images (BuildKit, QEMU handlers, shellcheck) come from the same mirror by tag (`TOOLS_REGISTRY`)
 - Consumers should pin images by digest, taken from the `manifest.json` of a release

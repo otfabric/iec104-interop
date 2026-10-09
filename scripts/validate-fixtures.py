@@ -55,6 +55,16 @@ def semantic_errors(fx):
             errors.append(f"command {ioa}: target {c.get('target')} is not a point")
         elif target["type"] != want:
             errors.append(f"command {ioa}: {c['type']} needs a {want} target, {c['target']} is {target['type']}")
+    files = set()
+    for f in fx.get("files", []):
+        ioa = f.get("ioa")
+        if ioa in files:
+            errors.append(f"file {ioa}: duplicate information object address")
+        files.add(ioa)
+        if ioa in points or ioa in seen:
+            errors.append(f"file {ioa}: address is also used by a point or a command")
+        if isinstance(f.get("sectionSize"), int) and isinstance(f.get("size"), int) and f["sectionSize"] > f["size"]:
+            errors.append(f"file {ioa}: sectionSize is larger than size")
     return errors
 
 

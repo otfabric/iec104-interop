@@ -26,6 +26,10 @@
     "commands": {
       "type": "array",
       "items": { "$ref": "#/$defs/command" }
+    },
+    "files": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/file" }
     }
   },
   "$defs": {
@@ -68,6 +72,17 @@
         { "if": { "not": { "properties": { "type": { "const": "M_IT_NA_1" } } } },
           "then": { "not": { "required": ["sequence"] } } }
       ]
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ioa", "name", "size", "sectionSize"],
+      "properties": {
+        "ioa": { "$ref": "#/$defs/ioa" },
+        "name": { "type": "integer", "minimum": 1, "maximum": 255 },
+        "size": { "type": "integer", "minimum": 1, "maximum": 65536 },
+        "sectionSize": { "type": "integer", "minimum": 1, "maximum": 65536 }
+      }
     },
     "command": {
       "type": "object",

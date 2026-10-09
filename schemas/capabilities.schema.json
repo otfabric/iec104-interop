@@ -20,7 +20,17 @@
         "revision": { "type": "string" },
         "license": { "type": "string" },
         "language": { "type": "string" },
-        "independentEngine": { "type": "boolean" }
+        "independentEngine": { "type": "boolean" },
+        "engine": {
+          "description": "The protocol engine, when the upstream is a layer over another project.",
+          "type": "object",
+          "required": ["name", "version", "license"],
+          "properties": {
+            "name": { "type": "string" },
+            "version": { "type": "string" },
+            "license": { "type": "string" }
+          }
+        }
       }
     },
     "roles": {
@@ -33,7 +43,8 @@
       "required": ["generalInterrogation", "groupInterrogation", "counterInterrogation", "read", "clockSync",
                    "testCommand", "directCommands", "selectBeforeOperate", "commandDeactivation",
                    "timeTaggedCommands", "spontaneousOnCommand", "apciParameters", "multipleConnections",
-                   "pointQualityOnBitstring", "tls", "fileTransfer"],
+                   "pointQualityOnBitstring", "tls", "dataTransferEvents", "fileTransfer", "fileServer",
+                   "fileClient"],
       "additionalProperties": { "type": "boolean" }
     },
     "pointTypes": { "type": "array", "items": { "type": "string", "pattern": "^M_[A-Z]{2}_[A-Z]{2}_1$" } },

@@ -257,6 +257,42 @@ bool Fixture_load(const char* path, Fixture* fx, char* err, size_t errSize)
             fx->commandCount++;
         }
     }
+    const cJSON* files = cJSON_GetObjectItemCaseSensitive(root, "files");
+    if (files != NULL) {
+        if (!cJSON_IsArray(files)) {
+            fail(err, errSize, "files must be an array%.0d%s", 0, "");
+            goto done;
+        }
+        fx->files = calloc((size_t)cJSON_GetArraySize(files) + 1, sizeof(FileSpec));
+        cJSON_ArrayForEach(item, files)
+        {
+            FileSpec* f = &fx->files[fx->fileCount];
+            const cJSON* ioa = cJSON_GetObjectItemCaseSensitive(item, "ioa");
+            const cJSON* nof = cJSON_GetObjectItemCaseSensitive(item, "name");
+            const cJSON* size = cJSON_GetObjectItemCaseSensitive(item, "size");
+            const cJSON* section = cJSON_GetObjectItemCaseSensitive(item, "sectionSize");
+            if (!isInteger(ioa) || ioa->valueint < 1 || ioa->valueint > 0xFFFFFF || !isInteger(nof) ||
+                nof->valueint < 1 || nof->valueint > 255 || !isInteger(size) || size->valueint < 1 ||
+                size->valueint > 65536 || !isInteger(section) || section->valueint < 1 ||
+                section->valueint > size->valueint) {
+                fail(err, errSize, "file %d: needs ioa, name (1..255), size (1..65536) and sectionSize (1..size)%s",
+                    fx->fileCount, "");
+                goto done;
+            }
+            f->ioa = ioa->valueint;
+            f->name = nof->valueint;
+            f->size = size->valueint;
+            f->sectionSize = section->valueint;
+            bool dup = Fixture_findPoint(fx, f->ioa) != NULL || Fixture_findCommand(fx, f->ioa) != NULL;
+            for (int i = 0; i < fx->fileCount; i++)
+                dup = dup || fx->files[i].ioa == f->ioa;
+            if (dup) {
+                fail(err, errSize, "file %d: duplicate information object address%s", f->ioa, "");
+                goto done;
+            }
+            fx->fileCount++;
+        }
+    }
     ok = true;
 
 done:

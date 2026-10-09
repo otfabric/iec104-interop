@@ -27,5 +27,9 @@
     { "ioa": 504, "type": "C_SE_NB_1", "target": 201, "reportCause": 11 },
     { "ioa": 505, "type": "C_RC_NA_1", "target": 102, "reportCause": 11 },
     { "ioa": 510, "type": "C_SC_NA_1", "target": 100, "reportCause": 11, "selectRequired": true }
+  ],
+  "files": [
+    { "ioa": 30000, "name": 1, "size": 1000, "sectionSize": 1000 },
+    { "ioa": 30001, "name": 1, "size": 5000, "sectionSize": 2048 }
   ]
 }

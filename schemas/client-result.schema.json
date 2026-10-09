@@ -11,7 +11,7 @@
     "adapter": { "type": "string" },
     "operation": {
       "enum": ["connect", "interrogate", "counter-interrogate", "read", "clock-sync", "test-command", "command",
-               "monitor"]
+               "monitor", "file-get"]
     },
     "ok": { "type": "boolean" },
     "error": {
@@ -45,10 +45,24 @@
       }
     },
     "terminated": { "type": "boolean" },
+    "file": {
+      "description": "file-get only: what was downloaded.",
+      "type": "object",
+      "required": ["ioa", "name", "length", "received", "sections", "sha256"],
+      "properties": {
+        "ioa": { "type": "integer", "minimum": 1, "maximum": 16777215 },
+        "name": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "length": { "type": "integer", "minimum": 0 },
+        "received": { "type": "integer", "minimum": 0 },
+        "sections": { "type": "integer", "minimum": 0 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
     "asdus": { "type": "array", "items": { "$ref": "#/$defs/asdu" } },
     "elapsedMs": { "type": "number", "minimum": 0 }
   },
   "allOf": [
+    { "if": { "properties": { "operation": { "const": "file-get" } } }, "then": { "required": ["file"] } },
     { "if": { "properties": { "ok": { "const": true } } }, "then": { "properties": { "error": { "type": "null" } } },
       "else": { "properties": { "error": { "type": "object" } } } }
   ],
@@ -86,7 +100,17 @@
               "qoi": { "type": "integer" },
               "qcc": { "type": "integer" },
               "counter": { "type": "integer" },
-              "coi": { "type": "integer" }
+              "coi": { "type": "integer" },
+              "nof": { "type": "integer", "minimum": 0, "maximum": 65535 },
+              "nos": { "type": "integer", "minimum": 0, "maximum": 255 },
+              "lof": { "type": "integer", "minimum": 0, "maximum": 16777215 },
+              "frq": { "type": "integer", "minimum": 0, "maximum": 255 },
+              "srq": { "type": "integer", "minimum": 0, "maximum": 255 },
+              "scq": { "type": "integer", "minimum": 0, "maximum": 255 },
+              "lsq": { "type": "integer", "minimum": 0, "maximum": 255 },
+              "chs": { "type": "integer", "minimum": 0, "maximum": 255 },
+              "afq": { "type": "integer", "minimum": 0, "maximum": 255 },
+              "data": { "type": "string", "pattern": "^([0-9a-f]{2})*$" }
             }
           }
         }

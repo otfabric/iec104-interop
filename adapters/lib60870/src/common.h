@@ -60,13 +60,28 @@ typedef struct {
 } Command;
 
 typedef struct {
+    int ioa;
+    int name;        /* NOF */
+    int size;        /* octets */
+    int sectionSize; /* octets per section; the last one may be shorter */
+} FileSpec;
+
+typedef struct {
     char name[64];
     int commonAddress;
     Point* points; /* sorted by ioa */
     int pointCount;
     Command* commands;
     int commandCount;
+    FileSpec* files;
+    int fileCount;
 } Fixture;
+
+/* Octet i of the file at ioa: the content rule of docs/FIXTURES.md. */
+static inline uint8_t fileOctet(int ioa, int i) { return (uint8_t)(((long)i + ioa) % 251); }
+
+/* SHA-256 of data as 64 lower-case hex digits plus NUL. */
+void sha256Hex(const uint8_t* data, size_t size, char out[65]);
 
 /* Loads and validates a fixture. On failure writes a message to err. */
 bool Fixture_load(const char* path, Fixture* fx, char* err, size_t errSize);

@@ -1,0 +1,4 @@
+github.com/wendy512/go-iecp5 v1.2.6 h1:EEYVd4PtDcKxRUBss8Hsm9pRj7YlQK8IEpbOf4qCP3E=
+github.com/wendy512/go-iecp5 v1.2.6/go.mod h1:d5koVsFZF0IV2JYznykSLJy6d29mHvXlNqm6GvvJQ0k=
+github.com/wendy512/iec104 v1.0.4 h1:GpZDrI9bUy8cUCOPUVLQZYxJ7gHDqzEHapePSj9mYb8=
+github.com/wendy512/iec104 v1.0.4/go.mod h1:y440d7zVZHIMJiZEk4F/KJQLhXIZWChffglEuGqukPo=

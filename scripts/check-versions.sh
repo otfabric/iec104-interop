@@ -27,4 +27,18 @@ if [[ "$(arg adapters/openmuc/Dockerfile J60870_VERSION)" != "$(sed -nE 's|.*<j6
     status=1
 fi
 need "gson version"      "gson: \"$(sed -nE 's|.*<gson.version>(.*)</gson.version>.*|\1|p' adapters/openmuc/pom.xml)\""
+
+gomod() { sed -nE "s|^[[:space:]]*github.com/wendy512/$1 (v[^ ]+).*$|\\1|p" adapters/wendy512/go.mod | head -1; }
+need "golang digest"     "$(arg adapters/wendy512/Dockerfile GOLANG_DIGEST)"
+need "wendy512 debian"   "$(arg adapters/wendy512/Dockerfile DEBIAN_DIGEST)"
+need "iec104 version"    "version: \"$(arg adapters/wendy512/Dockerfile IEC104_VERSION)\""
+need "go-iecp5 version"  "version: \"$(arg adapters/wendy512/Dockerfile GOIECP5_VERSION)\""
+if [[ "$(arg adapters/wendy512/Dockerfile IEC104_VERSION)" != "$(gomod iec104)" ]]; then
+    echo "FAIL iec104 version: Dockerfile and go.mod disagree"
+    status=1
+fi
+if [[ "$(arg adapters/wendy512/Dockerfile GOIECP5_VERSION)" != "$(gomod go-iecp5)" ]]; then
+    echo "FAIL go-iecp5 version: Dockerfile and go.mod disagree"
+    status=1
+fi
 exit "${status}"

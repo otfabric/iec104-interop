@@ -9,9 +9,14 @@ images; nothing here is linked into it.
 |---------|----------------|----------|:------:|:------:|-------|
 | `lib60870` | [MZ Automation lib60870-C](https://github.com/mz-automation/lib60870) v2.4.1 | C | yes | yes | `ghcr.io/otfabric/iec104-interop-lib60870` |
 | `openmuc` | [OpenMUC j60870](https://www.openmuc.org/iec-60870-5-104/) 1.7.2 | Java | yes | yes | `ghcr.io/otfabric/iec104-interop-openmuc` |
+| `wendy512` | [wendy512/iec104](https://github.com/wendy512/iec104) v1.0.4 on [go-iecp5](https://github.com/wendy512/go-iecp5) v1.2.6 | Go | yes | yes | `ghcr.io/otfabric/iec104-interop-wendy512` |
 
-Planned: wendy512/iec104 (Go), Eclipse OneOFour (Java) and Fraunhofer
-iec104-python. See [PLAN.md](PLAN.md).
+The stacks do not all do the same: file transfer is served by lib60870 only,
+and wendy512 has no time-tagged commands. Each image says what it supports
+(`print-capabilities`); see [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
+
+Planned: Eclipse OneOFour (Java) and Fraunhofer iec104-python. See
+[PLAN.md](PLAN.md).
 
 **Docs:** [docs/CONTAINER_CONTRACT.md](docs/CONTAINER_CONTRACT.md) (commands, JSON documents, exit codes) · [docs/FIXTURES.md](docs/FIXTURES.md) (the simulated station and its behaviour) · [docs/CAPABILITIES.md](docs/CAPABILITIES.md) · [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) (pins, cross-stack matrix, findings) · [COVERAGE.md](COVERAGE.md) · [REQUIREMENTS.md](REQUIREMENTS.md) · [PLAN.md](PLAN.md) · [RELEASE.md](RELEASE.md)
 
@@ -45,7 +50,7 @@ implementation behave that way; the consumer decides what to assert.
 Needs Docker and `jq`.
 
 ```sh
-make images      # build both adapter images for this machine
+make images      # build the adapter images for this machine
 make smoke       # container contract of each image
 make interop     # every client against every server
 ```
@@ -82,7 +87,7 @@ docker run --rm --add-host=host.docker.internal:host-gateway \
 ```text
 server               a controlled station serving a fixture
 client <operation>   connect, interrogate, counter-interrogate, read, clock-sync,
-                     test-command, command, monitor
+                     test-command, command, monitor, file-get
 print-capabilities   what this adapter supports, as JSON
 print-fixture        the fixture baked into the image
 ```
@@ -118,6 +123,7 @@ docker run --rm --add-host=host.docker.internal:host-gateway \
 fixture it was built with, so expectations cannot drift from the image.
 
 **What a stack supports** comes from the image too: `print-capabilities`.
+Skip, do not fail, a scenario that needs a feature an image declares false.
 
 **Pin by digest** in release qualification
 (`ghcr.io/otfabric/iec104-interop-lib60870@sha256:...`); the digests are in
@@ -129,17 +135,18 @@ each release's `manifest.json`.
 iec104-interop/
 ├── adapters/
 │   ├── lib60870/        C adapter: Dockerfile, CMakeLists.txt, src/
-│   └── openmuc/         Java adapter: Dockerfile, pom.xml, src/
+│   ├── openmuc/         Java adapter: Dockerfile, pom.xml, src/
+│   └── wendy512/        Go adapter: Dockerfile, go.mod, *.go
 ├── fixtures/
 │   ├── schema/          JSON Schema of the fixture format
 │   └── baseline/        the baseline station
 ├── schemas/             JSON Schemas of the capability and client result documents
-├── tests/cases.tsv      self-test cases: operation and expected outcome
+├── tests/cases.tsv      self-test cases: operation, expected outcome, features needed
 ├── tests/known-bugs.tsv bugs of upstream versions that are built as candidates
 ├── scripts/             validate, smoke, cross-stack self-test
 ├── docs/                contract, fixtures, capabilities, compatibility
 ├── versions.yaml        every upstream pin and base image digest
-├── compose.yaml         both reference servers on loopback
+├── compose.yaml         the reference servers on loopback
 └── Makefile
 ```
 
@@ -149,12 +156,13 @@ iec104-interop/
 make help        # all targets
 make ci          # validate, lint, build, smoke, cross-stack self-test, document schemas
 make validate    # fixtures against the schema and the cross-field rules
-make buildx      # check that both images build for linux/amd64 and linux/arm64
+make buildx      # check the other architecture locally, under emulation (CI builds both natively)
 make candidate-openmuc   # self-test the adapter on the latest j60870 instead of the pin
 ```
 
-The **Upstream candidates** workflow runs that probe weekly for lib60870 and
-j60870 and reports pin versus latest in its job summary.
+The **Upstream candidates** workflow runs that probe weekly for lib60870,
+j60870 and wendy512/iec104 with go-iecp5 and reports pin versus latest in
+its job summary.
 
 `make smoke ADAPTERS=lib60870` and `VERBOSE=1 make interop` narrow and
 expand what is run and shown. See [CONTRIBUTING.md](CONTRIBUTING.md) for
@@ -170,7 +178,7 @@ they must never be attached to a plant network. See [SECURITY.md](SECURITY.md).
 ## License
 
 The repository's own code and documentation are MIT-licensed, except the
-adapter sources under `adapters/`, which link GPL-3.0 libraries and are
-GPL-3.0-or-later. The images contain those libraries and are distributed
-under GPL-3.0. See [LICENSE](LICENSE) and
+adapter sources under `adapters/`, which are GPL-3.0-or-later: two of them
+link GPL-3.0 libraries, the third an Apache-2.0 and an LGPL-3.0 one. The
+images contain those libraries and are distributed under GPL-3.0. See [LICENSE](LICENSE) and
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -3,8 +3,8 @@
 # The Dockerfiles and adapters/openmuc/pom.xml are the source of truth for a
 # build: scripts/check-versions.sh fails when this file disagrees with them.
 
-interop_version: "0.1.0"
-contract_version: "1.0"        # docs/CONTAINER_CONTRACT.md, schemaVersion of every document
+interop_version: "0.2.0"
+contract_version: "1.1"        # docs/CONTAINER_CONTRACT.md, schemaVersion of every document
 fixture_schema: "1.0"          # fixtures/schema/iec104-fixture.schema.json
 
 protocol:
@@ -45,12 +45,26 @@ implementations:
 
   wendy512:
     priority: P1
-    status: planned
+    status: published
     upstream: "wendy512/iec104"
     repository: "https://github.com/wendy512/iec104"
+    module: "github.com/wendy512/iec104"
+    version: "v1.0.4"            # latest release
+    revision: "8fb65c83865c94cf37a89d12c9c42dd8c1807cc4"
     license: "Apache-2.0"
     language: "Go"
     independent_engine: true
+    roles: [server, client]
+    engine:
+      # The protocol engine wendy512/iec104 wraps; the adapter's client drives
+      # it directly. v1.2.6 is the same commit as v1.2.5, which iec104 v1.0.4
+      # asks for.
+      upstream: "wendy512/go-iecp5"
+      repository: "https://github.com/wendy512/go-iecp5"
+      module: "github.com/wendy512/go-iecp5"
+      version: "v1.2.6"          # latest release
+      revision: "2269ee79a5e137847bbdc811be71a1064d303560"
+      license: "LGPL-3.0"
 
   oneofour:
     priority: P1
@@ -78,11 +92,13 @@ base_images:
   # Digests recorded 2026-10-09; the Dockerfiles pin these by digest.
   debian_trixie_slim: "docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f"
   maven_3_9_temurin_25: "docker.io/library/maven:3.9-eclipse-temurin-25@sha256:93b8a14ea2f412782e4e842651273b4d903e35cc496284f178fbbe2d67d00976"
+  golang_1_27_2_trixie: "docker.io/library/golang:1.27.2-trixie@sha256:e58d6f83b3416618d8bcac2b3dde1b7f7e3c4a77d25e88637f8bbae81536c48d"
   temurin_25_jre_noble: "docker.io/library/eclipse-temurin:25-jre-noble@sha256:d9a39a23634650173f1e2bbc176227af9728587ecf0f4b62d53e9355cd7a19ab"
 
 images:
   lib60870: "ghcr.io/otfabric/iec104-interop-lib60870"
   openmuc: "ghcr.io/otfabric/iec104-interop-openmuc"
+  wendy512: "ghcr.io/otfabric/iec104-interop-wendy512"
 
 platforms:
   - "linux/amd64"

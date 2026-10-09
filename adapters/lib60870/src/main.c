@@ -19,6 +19,7 @@ static const char USAGE[] =
     "      command             --type T --ioa N --value V [--mode direct|select|sbo|cancel]\n"
     "                          [--qualifier N] [--with-time]\n"
     "      monitor             [--duration-ms N] [--max-asdus N]\n"
+    "      file-get            --ioa N [--name N]\n"
     "  print-capabilities\n"
     "  print-fixture [NAME]\n"
     "  version\n"
@@ -34,7 +35,7 @@ int printCapabilities(void)
     static const char* commandTypes[] = { "C_SC_NA_1", "C_DC_NA_1", "C_RC_NA_1", "C_SE_NA_1", "C_SE_NB_1",
         "C_SE_NC_1" };
     static const char* operations[] = { "connect", "interrogate", "counter-interrogate", "read", "clock-sync",
-        "test-command", "command", "monitor" };
+        "test-command", "command", "monitor", "file-get" };
 
     cJSON* c = cJSON_CreateObject();
     cJSON_AddStringToObject(c, "schemaVersion", SCHEMA_VERSION);
@@ -68,13 +69,17 @@ int printCapabilities(void)
     cJSON_AddTrueToObject(f, "spontaneousOnCommand");
     cJSON_AddTrueToObject(f, "apciParameters");
     cJSON_AddTrueToObject(f, "multipleConnections");
+    /* The server reports STARTDT and STOPDT as events. */
+    cJSON_AddTrueToObject(f, "dataTransferEvents");
     cJSON_AddFalseToObject(f, "pointQualityOnBitstring");
     cJSON_AddFalseToObject(f, "tls");
-    cJSON_AddFalseToObject(f, "fileTransfer");
+    cJSON_AddTrueToObject(f, "fileTransfer");
+    cJSON_AddTrueToObject(f, "fileServer");
+    cJSON_AddTrueToObject(f, "fileClient");
 
     cJSON_AddItemToObject(c, "pointTypes", cJSON_CreateStringArray(pointTypes, 8));
     cJSON_AddItemToObject(c, "commandTypes", cJSON_CreateStringArray(commandTypes, 6));
-    cJSON_AddItemToObject(c, "clientOperations", cJSON_CreateStringArray(operations, 8));
+    cJSON_AddItemToObject(c, "clientOperations", cJSON_CreateStringArray(operations, 9));
     emitJson(c);
     return EXIT_OK;
 }

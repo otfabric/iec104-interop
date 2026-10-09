@@ -16,17 +16,29 @@ self-tested as a candidate.
 |---------|----------|--------|--------|-----|--------|
 | `lib60870` | [MZ Automation lib60870-C](https://github.com/mz-automation/lib60870) | v2.4.1 | v2.4.1 | commit `7a388e3e133999e1ca77ba7521d55d074b7cd2bc` | independent, C |
 | `openmuc` | [OpenMUC j60870](https://www.openmuc.org/iec-60870-5-104/) | 1.7.2 | 1.8.0 | Maven Central `org.openmuc:j60870:1.7.2` | independent, Java |
+| `wendy512` | [wendy512/iec104](https://github.com/wendy512/iec104) | v1.0.4 | v1.0.4 | Go module `github.com/wendy512/iec104@v1.0.4` (commit `8fb65c83865c94cf37a89d12c9c42dd8c1807cc4`), checksum in `go.sum` | independent, Go |
+| | its engine [wendy512/go-iecp5](https://github.com/wendy512/go-iecp5) | v1.2.6 | v1.2.6 | Go module `github.com/wendy512/go-iecp5@v1.2.6` (commit `2269ee79a5e137847bbdc811be71a1064d303560`), checksum in `go.sum` | |
 
 Everything else is on its latest release as of 2026-10-09: Debian 13
-(trixie), Eclipse Temurin 25, Maven 3.9, Gson 2.14.0.
+(trixie), Eclipse Temurin 25, Maven 3.9, Gson 2.14.0, Go 1.27.2.
 
-The pins live in the Dockerfiles and `adapters/openmuc/pom.xml` and are
-mirrored in [versions.yaml](../versions.yaml); `scripts/check-versions.sh`
-keeps them in step. The **Upstream candidates** workflow
+wendy512/iec104 v1.0.4 asks for go-iecp5 v1.2.5; v1.2.6 is a later tag on
+the same commit, so the adapter builds on the latest tag without a change in
+code.
+
+The pins live in the Dockerfiles, `adapters/openmuc/pom.xml` and
+`adapters/wendy512/go.mod` and are mirrored in
+[versions.yaml](../versions.yaml); `scripts/check-versions.sh` keeps them in
+step. The **Upstream candidates** workflow
 (`.github/workflows/candidate.yml`, weekly and on demand) resolves the latest
 release of each stack and the tip of lib60870, builds the adapters on them,
 runs the smoke and cross-stack self-tests and writes a pin-vs-latest decision
 table to its job summary. It never changes a pin.
+
+The tip of go-iecp5 is not probed: its default branch (commit `4499b147`,
+2026-05-23) declares the module path `github.com/juanjorosendo/go-iecp5` in
+its `go.mod`, so it cannot be built as `github.com/wendy512/go-iecp5`. Only
+its release tags can be.
 
 ### Why j60870 is one release behind
 
@@ -61,18 +73,26 @@ signal.
 ## Cross-stack matrix
 
 `make interop` runs every case of [tests/cases.tsv](../tests/cases.tsv) in
-all four pairings and requires, besides the expected outcome, that the four
-result documents are identical apart from time tags.
+all nine pairings and requires, besides the expected outcome, that the
+result documents of all pairings are identical apart from time tags. A case
+that needs a feature a pairing does not declare is skipped for that pairing
+and counted as such.
 
-| Client → Server | lib60870 | openmuc |
-|-----------------|:--------:|:-------:|
-| **lib60870** | pass | pass |
-| **openmuc** | pass | pass |
+| Client → Server | lib60870 | openmuc | wendy512 |
+|-----------------|:--------:|:-------:|:--------:|
+| **lib60870** | pass | pass ¹ | pass ² |
+| **openmuc** | pass | pass ¹ | pass ² |
+| **wendy512** | pass ² | pass ¹ ² | pass ² |
 
-Verified on linux/arm64 with the pins above: 30 cases × 4 pairings, the value
-checks and the session checks.
+¹ without file transfer: the openmuc server does not serve files.
+² without time-tagged commands and file transfer: see the
+[capabilities](CAPABILITIES.md#features) of wendy512.
 
-Covered: STARTDT/STOPDT; general interrogation (station, broadcast address,
+Verified on linux/arm64 with the pins above on 2026-10-09: 39 cases, the
+value checks and the session checks over 9 pairings; 643 checks passed, none
+failed, 62 were skipped for a capability that is not declared.
+
+Covered by every pairing: STARTDT/STOPDT; general interrogation (station, broadcast address,
 unknown station, unsupported group); counter interrogation; read of a
 status, a measurement, a counter and an unknown address; clock
 synchronization; test command; single, double, regulating step and the
@@ -80,7 +100,13 @@ three set-point commands, with and without time tag, direct, select only,
 select-and-execute and cancelled; refusals for an unknown object, an object
 of another type, a state that is not permitted and an execute without the
 required select; flow control with `k = w = 1` on both sides; an idle
-connection kept alive by test frames; three sessions at once.
+connection kept alive by test frames; three sessions at once. (The commands
+with time tag only where footnote 2 does not apply.)
+
+Covered where declared: the download of a one-section and of a three-section
+file with the content and the SHA-256 the fixture defines, and the refusal of
+an unknown file address and of a wrong file name. Clients lib60870 and
+openmuc, server lib60870.
 
 ## Findings
 
@@ -134,11 +160,115 @@ the one asked for.
 `BitString32_create` takes no quality descriptor. The fixture format does not
 allow one on `M_BO_NA_1` for any adapter.
 
+### go-iecp5 drops types it has no length for
+
+go-iecp5 v1.2.6 looks up the length of an information object by type
+(`infoObjSize`) before it hands an ASDU to the application. The table has no
+entry for the commands with CP56Time2a (C_SC_TA_1 .. C_SE_TC_1, types 58..63)
+nor for F_SG_NA_1, and an ASDU of a type without entry is logged and dropped:
+
+```text
+asdu UnmarshalBinary failed,asdu: type identification unknown
+```
+
+Effect: a go-iecp5 station does not answer a time-tagged command at all (the
+other stacks confirm it, and would answer a type they do not know with cause
+44), and a go-iecp5 controlling station can send one but never sees the
+confirmation. It cannot receive a file either. The adapter declares
+`timeTaggedCommands`, `fileTransfer`, `fileServer` and `fileClient` false,
+and [tests/cases.tsv](../tests/cases.tsv) has every time-tagged command case
+a second time without time tag, so that the qualifier, the set points and
+select-and-execute are still covered in every pairing.
+
+### go-iecp5 handlers get a consumed ASDU
+
+Decoding consumes the ASDU in go-iecp5 (`DecodeInfoObjAddr` and the `Get...`
+methods cut what they read off the front). The server decodes a system
+command before it calls the handler, so in the handlers for interrogation,
+counter interrogation, read and clock synchronization the ASDU has already
+lost its information object address. A mirror made from it with
+`ASDU.Reply` or `ASDU.SendReplyMirror` announces one object and carries
+none, or only the qualifier.
+
+The adapter rebuilds the request from the handler's arguments and mirrors
+that. For process commands, which reach the application undecoded, it clones
+before it decodes.
+
+### go-iecp5 refusals have no P/N bit
+
+`ASDU.SendReplyMirror` changes the cause and nothing else, and the server's
+own refusals (unknown cause, common address 0, a non-zero address in a
+system command) use it: they go out with cause 44..47 and P/N = 0. The
+adapter checks the common address and the cause itself and sets the bit;
+only what go-iecp5 refuses before the handler runs is outside its reach, and
+none of that is fixture behaviour. A consumer should not rely on the P/N bit
+of a refusal with cause 44..47 from this stack, which is why the contract
+counts those causes as negative whatever the bit says.
+
+### go-iecp5 request and data helpers
+
+The helpers that build an ASDU (`asdu.Single`, `asdu.InterrogationCmd`, ...)
+always send originator address 0, and `asdu.IntegratedTotals` refuses cause
+5, which the answer to a read of a counter needs. The adapter's station
+builds its data ASDUs from the `Append...` primitives; its client keeps the
+helpers and puts the originator in on the way out.
+
+`asdu.TestCommandCP56Time2a` sends the fixed test word 0x55AA where
+C_TS_TA_1 has a test sequence counter; the adapter builds that request
+itself to send the counter of the contract.
+
+### go-iecp5 does not report STARTDT and STOPDT
+
+The server confirms STARTDT and STOPDT without a callback, so the adapter
+has no `data-transfer-started` and `data-transfer-stopped` events
+(`dataTransferEvents` false).
+
+The client has a callback for STARTDT con and none for STOPDT con. It does
+refuse to send while data transfer is stopped, and it checks that before it
+encodes; the adapter asks it to send an ASDU that cannot be encoded and
+reads from the error which state the connection is in. Nothing goes on the
+wire for that.
+
+### go-iecp5 client reconnects after a lost connection
+
+`ClientOption.SetAutoReconnect(false)` only covers a failed dial. After an
+established connection ends, the client dials again half a second to a
+second later. The adapter closes the client in the connection-lost callback.
+
+### go-iecp5 timing and windows
+
+- A queued ASDU is sent when the connection loop next wakes up: on a
+  received frame or on its 100 ms tick. A request and its answer therefore
+  take up to 100 ms each on an otherwise idle connection; a client operation
+  of this adapter takes about 0.2 s where the others take a few
+  milliseconds.
+- Read from the source, not asserted by a test: the send window is checked
+  with `outstanding <= k`, so `k + 1` I frames can be unacknowledged.
+- Every timer must be between 1 and 255 seconds (`t3` up to 48 hours), so
+  the idle test cannot be switched off. The adapter rejects other values as
+  a usage error.
+- The connect timeout is `t0`; the adapter sets it from
+  `--connect-timeout-ms`, raised to the minimum of one second.
+- A time tag with the IV bit is decoded to the zero time; the adapter
+  reports it as `timeInvalid` with that time.
+
+### wendy512/iec104 and go-iecp5: which layer the adapter uses
+
+wendy512/iec104 is a convenience layer over go-iecp5. Its server is used as
+is. Its client is not: it has no select, qualifier, deactivation or STOPDT,
+it opens and closes a TCP connection to test the address before the real
+one, and it does not expose the engine underneath. The adapter's client
+drives go-iecp5's `cs104.Client`, the same engine, directly.
+
+The server does not report whether it could listen, and go-iecp5's client
+does not report a failed dial, other than through the log; the adapter
+watches the library log for those two messages.
+
 ## Platforms
 
 | Platform | Status |
 |----------|--------|
-| linux/arm64 | Built and self-tested locally |
-| linux/amd64 | Builds (checked locally under emulation with `make buildx`); self-tested by CI, of which no run is recorded yet |
+| linux/amd64 | Built and self-tested natively by CI and by the release workflow |
+| linux/arm64 | Built and self-tested natively by CI and by the release workflow (arm64 runner); also locally |
 
-Both adapters are plain C and Java with no architecture-specific code.
+The adapters are plain C, Java and Go with no architecture-specific code.

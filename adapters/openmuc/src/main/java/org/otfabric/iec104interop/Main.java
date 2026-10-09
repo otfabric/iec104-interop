@@ -52,6 +52,7 @@ public final class Main {
             "      command             --type T --ioa N --value V [--mode direct|select|sbo|cancel]",
             "                          [--qualifier N] [--with-time]",
             "      monitor             [--duration-ms N] [--max-asdus N]",
+            "      file-get            --ioa N [--name N]",
             "  print-capabilities",
             "  print-fixture [NAME]",
             "  version",
@@ -138,7 +139,12 @@ public final class Main {
         f.addProperty("multipleConnections", true);
         f.addProperty("pointQualityOnBitstring", false);
         f.addProperty("tls", false);
-        f.addProperty("fileTransfer", false);
+        // The server reports STARTDT and STOPDT as events.
+        f.addProperty("dataTransferEvents", true);
+        // The client can download a file; the server does not serve files.
+        f.addProperty("fileTransfer", true);
+        f.addProperty("fileServer", false);
+        f.addProperty("fileClient", true);
         c.add("features", f);
 
         c.add("pointTypes", strings("M_SP_NA_1", "M_DP_NA_1", "M_ST_NA_1", "M_BO_NA_1", "M_ME_NA_1", "M_ME_NB_1",
@@ -146,7 +152,7 @@ public final class Main {
         c.add("commandTypes",
                 strings("C_SC_NA_1", "C_DC_NA_1", "C_RC_NA_1", "C_SE_NA_1", "C_SE_NB_1", "C_SE_NC_1"));
         c.add("clientOperations", strings("connect", "interrogate", "counter-interrogate", "read", "clock-sync",
-                "test-command", "command", "monitor"));
+                "test-command", "command", "monitor", "file-get"));
         emit(c);
         return EXIT_OK;
     }

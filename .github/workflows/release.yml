@@ -12,13 +12,30 @@ permissions:
 
 env:
   REGISTRY: ghcr.io/otfabric
+  # Nothing is pulled from Docker Hub: anonymous pulls are rate limited per
+  # runner address and its token service times out under load. Base images
+  # (pinned by digest) and build tooling come from Google's mirror of it, and
+  # every registry operation is retried on transient failures (scripts/retry.sh).
+  BASE_REGISTRY: mirror.gcr.io/library
+  TOOLS_REGISTRY: mirror.gcr.io
   VERSION: ${{ github.ref_name }}
 
 jobs:
-  release:
-    name: Build, test, push, release
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
+  # One job per architecture on a runner of that architecture: the images are
+  # built natively, self-tested, and exactly those are pushed, as
+  # <image>:<version>-<arch>.
+  build:
+    name: Build, test, push (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -33,44 +50,55 @@ jobs:
           want="interop_version: \"${VERSION#v}\""
           grep -qF "$want" versions.yaml || { echo "::error::versions.yaml does not say $want"; exit 1; }
 
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
-
-      # The images that get published are tested first: build for the runner,
-      # run the contract and cross-stack self-tests against exactly that build.
-      - name: Build for the runner and self-test
+      - name: Build for linux/${{ matrix.arch }} and self-test
         run: |
           make images
           make documents
 
       - name: Login to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "${GHCR_TOKEN}" > "${RUNNER_TEMP}/ghcr-token"
+          # shellcheck disable=SC2016  # $0 and $1 are for the inner shell
+          scripts/retry.sh sh -c 'docker login ghcr.io --username "$0" --password-stdin < "$1"' \
+            "${{ github.actor }}" "${RUNNER_TEMP}/ghcr-token"
+          rm -f "${RUNNER_TEMP}/ghcr-token"
 
-      - name: Push lib60870 (linux/amd64, linux/arm64)
-        id: lib60870
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: adapters/lib60870/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          build-args: ADAPTER_VERSION=${{ github.ref_name }}
-          tags: ${{ env.REGISTRY }}/iec104-interop-lib60870:${{ github.ref_name }}
+      - name: Push the tested images as ${{ github.ref_name }}-${{ matrix.arch }}
+        run: make publish-arch ARCH=${{ matrix.arch }}
 
-      - name: Push openmuc (linux/amd64, linux/arm64)
-        id: openmuc
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: adapters/openmuc/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          build-args: ADAPTER_VERSION=${{ github.ref_name }}
-          tags: ${{ env.REGISTRY }}/iec104-interop-openmuc:${{ github.ref_name }}
+  # Joins the per-architecture images into the multi-arch tag and publishes
+  # the release. Nothing is built here.
+  release:
+    name: Multi-arch manifest and release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: build
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Login to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "${GHCR_TOKEN}" > "${RUNNER_TEMP}/ghcr-token"
+          # shellcheck disable=SC2016  # $0 and $1 are for the inner shell
+          scripts/retry.sh sh -c 'docker login ghcr.io --username "$0" --password-stdin < "$1"' \
+            "${{ github.actor }}" "${RUNNER_TEMP}/ghcr-token"
+          rm -f "${RUNNER_TEMP}/ghcr-token"
+
+      - name: Create ${{ github.ref_name }} from the amd64 and arm64 images
+        run: make publish-manifest
+
+      - name: Digests of the multi-arch images
+        id: digests
+        run: |
+          make -s digests | tee digests.txt
+          while read -r adapter digest; do
+            [[ "${digest}" == sha256:* ]] || { echo "::error::no digest for ${adapter}"; exit 1; }
+            echo "${adapter}=${digest}" >> "$GITHUB_OUTPUT"
+          done < digests.txt
 
       - name: Write manifest.json
         run: |
@@ -81,21 +109,27 @@ jobs:
             --arg lib_version "$(arg adapters/lib60870/Dockerfile LIB60870_VERSION)" \
             --arg lib_sha "$(arg adapters/lib60870/Dockerfile LIB60870_SHA)" \
             --arg j60870 "$(arg adapters/openmuc/Dockerfile J60870_VERSION)" \
-            --arg lib_digest "${{ steps.lib60870.outputs.digest }}" \
-            --arg openmuc_digest "${{ steps.openmuc.outputs.digest }}" \
+            --arg iec104 "$(arg adapters/wendy512/Dockerfile IEC104_VERSION)" \
+            --arg goiecp5 "$(arg adapters/wendy512/Dockerfile GOIECP5_VERSION)" \
+            --arg lib_digest "${{ steps.digests.outputs.lib60870 }}" \
+            --arg openmuc_digest "${{ steps.digests.outputs.openmuc }}" \
+            --arg wendy512_digest "${{ steps.digests.outputs.wendy512 }}" \
             '{
               version: $version,
               commit: $commit,
-              contract: "1.0",
+              contract: "1.1",
               fixtureSchema: "1.0",
               platforms: ["linux/amd64", "linux/arm64"],
               upstream: {
                 lib60870: { version: $lib_version, revision: $lib_sha },
-                j60870: { version: $j60870 }
+                j60870: { version: $j60870 },
+                "wendy512/iec104": { version: $iec104 },
+                "wendy512/go-iecp5": { version: $goiecp5 }
               },
               images: {
                 lib60870: ("ghcr.io/otfabric/iec104-interop-lib60870@" + $lib_digest),
-                openmuc: ("ghcr.io/otfabric/iec104-interop-openmuc@" + $openmuc_digest)
+                openmuc: ("ghcr.io/otfabric/iec104-interop-openmuc@" + $openmuc_digest),
+                wendy512: ("ghcr.io/otfabric/iec104-interop-wendy512@" + $wendy512_digest)
               }
             }' > manifest.json
           cat manifest.json
@@ -109,17 +143,19 @@ jobs:
 
             | Image | Digest |
             |-------|--------|
-            | `ghcr.io/otfabric/iec104-interop-lib60870:${{ github.ref_name }}` | `${{ steps.lib60870.outputs.digest }}` |
-            | `ghcr.io/otfabric/iec104-interop-openmuc:${{ github.ref_name }}` | `${{ steps.openmuc.outputs.digest }}` |
+            | `ghcr.io/otfabric/iec104-interop-lib60870:${{ github.ref_name }}` | `${{ steps.digests.outputs.lib60870 }}` |
+            | `ghcr.io/otfabric/iec104-interop-openmuc:${{ github.ref_name }}` | `${{ steps.digests.outputs.openmuc }}` |
+            | `ghcr.io/otfabric/iec104-interop-wendy512:${{ github.ref_name }}` | `${{ steps.digests.outputs.wendy512 }}` |
 
             ## Pinning in a consumer
 
             ```bash
-            IEC104_INTEROP_LIB60870_IMAGE=ghcr.io/otfabric/iec104-interop-lib60870@${{ steps.lib60870.outputs.digest }}
-            IEC104_INTEROP_OPENMUC_IMAGE=ghcr.io/otfabric/iec104-interop-openmuc@${{ steps.openmuc.outputs.digest }}
+            IEC104_INTEROP_LIB60870_IMAGE=ghcr.io/otfabric/iec104-interop-lib60870@${{ steps.digests.outputs.lib60870 }}
+            IEC104_INTEROP_OPENMUC_IMAGE=ghcr.io/otfabric/iec104-interop-openmuc@${{ steps.digests.outputs.openmuc }}
+            IEC104_INTEROP_WENDY512_IMAGE=ghcr.io/otfabric/iec104-interop-wendy512@${{ steps.digests.outputs.wendy512 }}
             ```
 
-            `manifest.json` records the upstream revisions these images were built from. The images contain GPL-3.0 software; see `THIRD_PARTY_NOTICES.md`. Notes: `RELEASE.md`.
+            `manifest.json` records the upstream revisions these images were built from. The images contain GPL-3.0, LGPL-3.0 and Apache-2.0 software; see `THIRD_PARTY_NOTICES.md`. Notes: `RELEASE.md`.
           files: |
             manifest.json
             checksums.txt

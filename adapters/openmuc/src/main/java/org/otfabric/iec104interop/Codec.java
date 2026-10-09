@@ -10,12 +10,20 @@ import java.util.TimeZone;
 
 import org.openmuc.j60870.ASdu;
 import org.openmuc.j60870.ASduType;
+import org.openmuc.j60870.ie.IeAckFileOrSectionQualifier;
 import org.openmuc.j60870.ie.IeBinaryCounterReading;
 import org.openmuc.j60870.ie.IeBinaryStateInformation;
 import org.openmuc.j60870.ie.IeCauseOfInitialization;
+import org.openmuc.j60870.ie.IeChecksum;
 import org.openmuc.j60870.ie.IeDoubleCommand;
 import org.openmuc.j60870.ie.IeDoublePointWithQuality;
 import org.openmuc.j60870.ie.IeDoublePointWithQuality.DoublePointInformation;
+import org.openmuc.j60870.ie.IeFileReadyQualifier;
+import org.openmuc.j60870.ie.IeFileSegment;
+import org.openmuc.j60870.ie.IeLastSectionOrSegmentQualifier;
+import org.openmuc.j60870.ie.IeLengthOfFileOrSection;
+import org.openmuc.j60870.ie.IeNameOfFile;
+import org.openmuc.j60870.ie.IeNameOfSection;
 import org.openmuc.j60870.ie.IeNormalizedValue;
 import org.openmuc.j60870.ie.IeQualifierOfCounterInterrogation;
 import org.openmuc.j60870.ie.IeQualifierOfInterrogation;
@@ -23,6 +31,8 @@ import org.openmuc.j60870.ie.IeQualifierOfSetPointCommand;
 import org.openmuc.j60870.ie.IeQuality;
 import org.openmuc.j60870.ie.IeRegulatingStepCommand;
 import org.openmuc.j60870.ie.IeScaledValue;
+import org.openmuc.j60870.ie.IeSectionReadyQualifier;
+import org.openmuc.j60870.ie.IeSelectAndCallQualifier;
 import org.openmuc.j60870.ie.IeShortFloat;
 import org.openmuc.j60870.ie.IeSingleCommand;
 import org.openmuc.j60870.ie.IeSinglePointWithQuality;
@@ -50,7 +60,8 @@ final class Codec {
             ASduType.M_IT_TB_1, ASduType.C_SC_NA_1, ASduType.C_DC_NA_1, ASduType.C_RC_NA_1, ASduType.C_SE_NA_1,
             ASduType.C_SE_NB_1, ASduType.C_SE_NC_1, ASduType.C_SC_TA_1, ASduType.C_DC_TA_1, ASduType.C_RC_TA_1,
             ASduType.C_SE_TA_1, ASduType.C_SE_TB_1, ASduType.C_SE_TC_1, ASduType.M_EI_NA_1, ASduType.C_IC_NA_1,
-            ASduType.C_CI_NA_1, ASduType.C_RD_NA_1, ASduType.C_CS_NA_1, ASduType.C_TS_TA_1);
+            ASduType.C_CI_NA_1, ASduType.C_RD_NA_1, ASduType.C_CS_NA_1, ASduType.C_TS_TA_1, ASduType.F_FR_NA_1,
+            ASduType.F_SR_NA_1, ASduType.F_SC_NA_1, ASduType.F_LS_NA_1, ASduType.F_AF_NA_1, ASduType.F_SG_NA_1);
 
     private Codec() {
     }
@@ -359,6 +370,51 @@ final class Codec {
             o.addProperty("value", (double) ((IeShortFloat) e[0]).getValue());
             addSetpointQualifier(o, e[1]);
             break;
+        case F_FR_NA_1: {
+            IeFileReadyQualifier q = (IeFileReadyQualifier) e[2];
+            o.addProperty("nof", ((IeNameOfFile) e[0]).getValue());
+            o.addProperty("lof", ((IeLengthOfFileOrSection) e[1]).getValue());
+            o.addProperty("frq", q.getValue() | (q.isNegativeConfirm() ? 0x80 : 0));
+            break;
+        }
+        case F_SR_NA_1: {
+            IeSectionReadyQualifier q = (IeSectionReadyQualifier) e[3];
+            o.addProperty("nof", ((IeNameOfFile) e[0]).getValue());
+            o.addProperty("nos", ((IeNameOfSection) e[1]).getValue());
+            o.addProperty("lof", ((IeLengthOfFileOrSection) e[2]).getValue());
+            o.addProperty("srq", q.getValue() | (q.isSectionNotReady() ? 0x80 : 0));
+            break;
+        }
+        case F_SC_NA_1: {
+            IeSelectAndCallQualifier q = (IeSelectAndCallQualifier) e[2];
+            o.addProperty("nof", ((IeNameOfFile) e[0]).getValue());
+            o.addProperty("nos", ((IeNameOfSection) e[1]).getValue());
+            o.addProperty("scq", q.getRequest() | q.getFreeze() << 4);
+            break;
+        }
+        case F_LS_NA_1:
+            o.addProperty("nof", ((IeNameOfFile) e[0]).getValue());
+            o.addProperty("nos", ((IeNameOfSection) e[1]).getValue());
+            o.addProperty("lsq", ((IeLastSectionOrSegmentQualifier) e[2]).getValue());
+            o.addProperty("chs", ((IeChecksum) e[3]).getValue());
+            break;
+        case F_AF_NA_1: {
+            IeAckFileOrSectionQualifier q = (IeAckFileOrSectionQualifier) e[2];
+            o.addProperty("nof", ((IeNameOfFile) e[0]).getValue());
+            o.addProperty("nos", ((IeNameOfSection) e[1]).getValue());
+            o.addProperty("afq", q.getRequest() | q.getFreeze() << 4);
+            break;
+        }
+        case F_SG_NA_1: {
+            StringBuilder hex = new StringBuilder();
+            for (byte b : ((IeFileSegment) e[2]).getSegment()) {
+                hex.append(String.format("%02x", b));
+            }
+            o.addProperty("nof", ((IeNameOfFile) e[0]).getValue());
+            o.addProperty("nos", ((IeNameOfSection) e[1]).getValue());
+            o.addProperty("data", hex.toString());
+            break;
+        }
         case M_EI_NA_1:
             o.addProperty("coi", ((IeCauseOfInitialization) e[0]).getValue());
             break;

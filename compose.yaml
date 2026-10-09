@@ -2,7 +2,7 @@
 # these are unauthenticated IEC 60870-5-104 stations and must not be reachable
 # from a plant network.
 #
-#   docker compose up -d --wait        # both servers, waits for readiness
+#   docker compose up -d --wait        # every server, waits for readiness
 #   docker compose down
 #
 # IEC104_INTEROP_VERSION selects the image tag (default: dev, the local build).
@@ -29,3 +29,9 @@ services:
     image: ghcr.io/otfabric/iec104-interop-openmuc:${IEC104_INTEROP_VERSION:-dev}
     ports:
       - "127.0.0.1:2405:2404"
+
+  wendy512:
+    <<: *server
+    image: ghcr.io/otfabric/iec104-interop-wendy512:${IEC104_INTEROP_VERSION:-dev}
+    ports:
+      - "127.0.0.1:2406:2404"

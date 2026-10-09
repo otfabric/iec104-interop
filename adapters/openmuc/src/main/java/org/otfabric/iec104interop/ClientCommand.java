@@ -61,12 +61,17 @@ final class ClientCommand implements ConnectionEventListener {
     private ASduType expectType;
     private int expectIoa;
     private boolean expectRead;
+    /** File transfer ASDUs, for the file operation. */
+    private final java.util.ArrayDeque<ASdu> fileEvents = new java.util.ArrayDeque<>();
 
     @Override
     public synchronized void newASdu(Connection connection, ASdu asdu) {
         asdus.add(Codec.asduJson(asdu));
         asduCount++;
         ASduType type = asdu.getTypeIdentification();
+        if (type != null && type.getId() >= 120 && type.getId() <= 125) {
+            fileEvents.add(asdu);
+        }
         int cot = asdu.getCauseOfTransmission().getId();
         if (expectType != null && type == expectType) {
             boolean unknown = cot >= 44 && cot <= 47;
@@ -156,6 +161,118 @@ final class ClientCommand implements ConnectionEventListener {
                 throw new Failure("connection-lost", "connection closed while waiting for termination");
             }
             throw new Failure("timeout", "no activation termination from the station");
+        }
+    }
+
+    /** What a download produced, for the result document. */
+    private static final class Download {
+        final java.io.ByteArrayOutputStream data = new java.io.ByteArrayOutputStream();
+        int length;
+        int sections;
+    }
+
+    private ASdu nextFileEvent(int timeoutMs, String what) throws Failure {
+        if (!waitFor(() -> !fileEvents.isEmpty(), timeoutMs)) {
+            if (isClosed()) {
+                throw new Failure("connection-lost", "connection closed during the file transfer");
+            }
+            throw new Failure("timeout", "the station did not send " + what);
+        }
+        synchronized (this) {
+            return fileEvents.poll();
+        }
+    }
+
+    private static int checksum(byte[] b, int from, int to) {
+        int sum = 0;
+        for (int i = from; i < to; i++) {
+            sum += b[i];
+        }
+        return sum & 0xFF;
+    }
+
+    /** Select, call, receive and acknowledge one file. See docs/CONTAINER_CONTRACT.md. */
+    private void download(Connection c, int ca, int ioa, int nof, int timeoutMs, Download d)
+            throws Failure, IOException {
+        org.openmuc.j60870.ie.IeNameOfFile name = new org.openmuc.j60870.ie.IeNameOfFile(nof);
+        CauseOfTransmission ft = CauseOfTransmission.FILE_TRANSFER;
+        c.callOrSelectFiles(ca, ft, ioa, name, new org.openmuc.j60870.ie.IeNameOfSection(0),
+                new org.openmuc.j60870.ie.IeSelectAndCallQualifier(1, 0));
+        ASdu a = nextFileEvent(timeoutMs, "file ready");
+        org.openmuc.j60870.ie.InformationElement[] e = a.getInformationObjects()[0].getInformationElements()[0];
+        // A refusal is the mirrored call with an "unknown ..." cause, or a
+        // file ready with the negative bit.
+        boolean refused = a.getTypeIdentification() == ASduType.F_SC_NA_1 || a.isNegativeConfirm()
+                || (a.getTypeIdentification() == ASduType.F_FR_NA_1
+                        && ((org.openmuc.j60870.ie.IeFileReadyQualifier) e[2]).isNegativeConfirm());
+        if (refused) {
+            synchronized (this) {
+                negativeCot = a.getCauseOfTransmission().getId();
+            }
+            throw new Failure("negative-confirmation",
+                    "the station refused the file (cause " + a.getCauseOfTransmission().getId() + ")");
+        }
+        if (a.getTypeIdentification() != ASduType.F_FR_NA_1) {
+            throw new Failure("failed", "expected file ready, got " + a.getTypeIdentification());
+        }
+        d.length = ((org.openmuc.j60870.ie.IeLengthOfFileOrSection) e[1]).getValue();
+
+        c.callOrSelectFiles(ca, ft, ioa, name, new org.openmuc.j60870.ie.IeNameOfSection(0),
+                new org.openmuc.j60870.ie.IeSelectAndCallQualifier(2, 0));
+        while (true) {
+            a = nextFileEvent(timeoutMs, "section ready or last section");
+            e = a.getInformationObjects()[0].getInformationElements()[0];
+            if (a.getTypeIdentification() == ASduType.F_LS_NA_1) {
+                int lsq = ((org.openmuc.j60870.ie.IeLastSectionOrSegmentQualifier) e[2]).getValue();
+                if (lsq != 1 && lsq != 2) {
+                    throw new Failure("failed", "expected last section, got last segment");
+                }
+                // Last section: the checksum covers the whole file.
+                byte[] all = d.data.toByteArray();
+                boolean good = checksum(all, 0, all.length) == ((org.openmuc.j60870.ie.IeChecksum) e[3]).getValue()
+                        && all.length == d.length;
+                c.ackFileOrSection(ca, ioa, name, (org.openmuc.j60870.ie.IeNameOfSection) e[1],
+                        new org.openmuc.j60870.ie.IeAckFileOrSectionQualifier(good ? 1 : 2, 0));
+                if (!good) {
+                    throw new Failure("failed", "file checksum or length mismatch after " + all.length + " octets");
+                }
+                return;
+            }
+            if (a.getTypeIdentification() != ASduType.F_SR_NA_1) {
+                throw new Failure("failed", "expected section ready, got " + a.getTypeIdentification());
+            }
+            if (((org.openmuc.j60870.ie.IeSectionReadyQualifier) e[3]).isSectionNotReady()) {
+                throw new Failure("failed", "the section is not ready");
+            }
+            org.openmuc.j60870.ie.IeNameOfSection nos = (org.openmuc.j60870.ie.IeNameOfSection) e[1];
+            int sectionLength = ((org.openmuc.j60870.ie.IeLengthOfFileOrSection) e[2]).getValue();
+            int sectionStart = d.data.size();
+            d.sections++;
+            c.callOrSelectFiles(ca, ft, ioa, name, nos, new org.openmuc.j60870.ie.IeSelectAndCallQualifier(6, 0));
+            while (true) {
+                a = nextFileEvent(timeoutMs, "a segment or last segment");
+                e = a.getInformationObjects()[0].getInformationElements()[0];
+                if (a.getTypeIdentification() == ASduType.F_SG_NA_1) {
+                    byte[] seg = ((org.openmuc.j60870.ie.IeFileSegment) e[2]).getSegment();
+                    if (d.data.size() + seg.length > d.length) {
+                        throw new Failure("failed", "more data than the announced " + d.length + " octets");
+                    }
+                    d.data.write(seg, 0, seg.length);
+                    continue;
+                }
+                if (a.getTypeIdentification() != ASduType.F_LS_NA_1) {
+                    throw new Failure("failed", "expected a segment or last segment, got " + a.getTypeIdentification());
+                }
+                byte[] all = d.data.toByteArray();
+                boolean good = checksum(all, sectionStart, all.length) == ((org.openmuc.j60870.ie.IeChecksum) e[3])
+                        .getValue() && all.length - sectionStart == sectionLength;
+                c.ackFileOrSection(ca, ioa, name, nos,
+                        new org.openmuc.j60870.ie.IeAckFileOrSectionQualifier(good ? 3 : 4, 0));
+                if (!good) {
+                    throw new Failure("failed", "checksum or length mismatch in section " + nos.getValue());
+                }
+                break;
+            }
         }
     }
 
@@ -307,6 +424,8 @@ final class ClientCommand implements ConnectionEventListener {
         String mode = "direct";
         boolean withTime = false;
         ProcessCommand command = null;
+        int fileName = 1;
+        Download download = new Download();
         switch (op) {
         case "connect":
             holdMs = args.integer("--hold-ms", 0);
@@ -342,6 +461,13 @@ final class ClientCommand implements ConnectionEventListener {
             withTime = args.flag("--with-time");
             if (!mode.equals("direct") && !mode.equals("select") && !mode.equals("sbo") && !mode.equals("cancel")) {
                 throw new Args.UsageException("command: --mode must be direct, select, sbo or cancel");
+            }
+            break;
+        case "file-get":
+            ioa = args.integer("--ioa", 0);
+            fileName = args.integer("--name", 1);
+            if (ioa < 1 || fileName < 1 || fileName > 65535) {
+                throw new Args.UsageException("file-get: --ioa is required; --name is 1..65535");
             }
             break;
         case "monitor":
@@ -465,6 +591,9 @@ final class ClientCommand implements ConnectionEventListener {
                 }
                 break;
             }
+            case "file-get":
+                state.download(c, ca, fIoa, fileName, timeoutMs, download);
+                break;
             default: // monitor
                 state.waitFor(() -> fMax > 0 && state.asduCount >= fMax, durationMs);
                 if (state.isClosed()) {
@@ -505,6 +634,25 @@ final class ClientCommand implements ConnectionEventListener {
         r.addProperty("startdtConfirmed", startdt);
         if (op.equals("connect")) {
             r.addProperty("stopdtConfirmed", stopdt);
+        }
+        if (op.equals("file-get")) {
+            byte[] data = download.data.toByteArray();
+            JsonObject f = new JsonObject();
+            f.addProperty("ioa", ioa);
+            f.addProperty("name", fileName);
+            f.addProperty("length", download.length);
+            f.addProperty("received", data.length);
+            f.addProperty("sections", download.sections);
+            StringBuilder hex = new StringBuilder();
+            try {
+                for (byte b : java.security.MessageDigest.getInstance("SHA-256").digest(data)) {
+                    hex.append(String.format("%02x", b));
+                }
+            } catch (java.security.NoSuchAlgorithmException e) {
+                throw new IllegalStateException(e);
+            }
+            f.addProperty("sha256", hex.toString());
+            r.add("file", f);
         }
         synchronized (state) {
             r.add("confirmations", state.confirmations.deepCopy());

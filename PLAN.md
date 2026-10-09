@@ -7,8 +7,8 @@ Delivery in phases, each with an acceptance gate. Status as of 2026-10-09.
 | 1 | Foundation: contract, fixture format, validation, version manifest, tooling | done |
 | 2 | lib60870 adapter, client and server | done |
 | 3 | OpenMUC adapter; cross-stack self-test | done |
-| 4 | First published images; consumption from go-iec104 | images not published yet; consumer suite exists and passes against local builds |
-| 5 | wendy512, Eclipse OneOFour, Fraunhofer adapters | not started |
+| 4 | First published images; consumption from go-iec104 | done: v0.1.0 |
+| 5 | wendy512, Eclipse OneOFour, Fraunhofer adapters | wendy512 done; the other two not started |
 | 6 | Expanded coverage and hardening | partly: see below |
 | 7 | Release qualification | workflow written, not exercised |
 
@@ -35,25 +35,30 @@ Delivery in phases, each with an acceptance gate. Status as of 2026-10-09.
 
 **Gate:** both stacks satisfy the baseline contract in every direction. Met (249 checks). Findings are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md), notably that j60870 1.8.0 cannot receive a read command, which is why 1.7.2 is pinned.
 
-## Phase 4 - First published images (open)
+## Phase 4 - First published images (done)
 
-Remaining:
+- `v0.1.0`: the release workflow built linux/amd64 and linux/arm64, pushed both images to GHCR and attached `manifest.json` with the digests.
+- go-iec104 pins those digests and runs its suite against them in CI.
 
-1. Tag `v0.1.0`; the release workflow builds linux/amd64 and linux/arm64, pushes to GHCR and attaches `manifest.json` with the digests.
-2. Make the two GHCR packages public (or grant the consumer's CI read access).
-3. In go-iec104, replace the `:dev` default by the released digests and enable its interop workflow on push.
+**Gate:** go-iec104 runs its bidirectional tests against the published images without a checkout of this repository. Met.
 
-go-iec104 already carries its suite (`interop/`, `make interop`) and passes it against locally built images in both directions.
+## Phase 5 - Additional adapters (wendy512 done)
 
-**Gate:** go-iec104 runs its bidirectional tests against the published images without a checkout of this repository.
+### wendy512/iec104 (done)
 
-## Phase 5 - Additional adapters (not started)
+Evaluation: both roles exist; the latest tags are v1.0.4 (Apache-2.0) and, for its engine go-iecp5, v1.2.6 (LGPL-3.0); the engine descends from thinkgos/go-iecp5 and shares nothing with lib60870 or j60870, so it counts as a third independent implementation; pure Go, so both architectures build without emulation of a compiler.
+
+- Go adapter, both roles, the eight operations of contract 1.0. The server uses wendy512/iec104, the client its engine directly.
+- Not available in the upstream and declared so: time-tagged commands, file transfer, the STARTDT/STOPDT server events.
+
+**Gate:** smoke test and cross-stack self-test for the roles it declares. Met (29 smoke checks; 643 cross-stack checks over nine pairings, 62 skipped for undeclared capabilities). Findings are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+
+### Remaining
 
 In priority order. Each needs the evaluation first; none blocks a release.
 
 | Adapter | To establish before writing it |
 |---------|--------------------------------|
-| wendy512/iec104 (Go, P1) | Whether a server role exists and is usable; pin a tagged release or a commit; map its ASDU model to the documents |
 | Eclipse OneOFour (Java, P1) | Whether the source still builds with a current JDK and Maven; which roles it provides; its licence per component |
 | Fraunhofer iec104-python (P2) | Packaging (wheels per architecture); declare `independentEngine: false` because it wraps lib60870 |
 
@@ -61,7 +66,7 @@ An adapter joins `ADAPTERS` in the Makefile and the CI matrix once it passes `ma
 
 ## Phase 6 - Expanded coverage (partly done)
 
-Done: the upstream candidates workflow (weekly probe of the latest lib60870 and j60870 with a pin-vs-latest decision table); commands of six types with and without time tag, select-before-operate and deactivation, counter interrogation, clock synchronization, time-tagged reports on command, `k`/`w` at 1, the idle test, concurrent sessions.
+Done: the upstream candidates workflow (weekly probe of the latest lib60870, j60870 and wendy512/iec104 with go-iecp5, with a pin-vs-latest decision table); capability-aware self-tests (a case names the features it needs and is skipped for a pairing that lacks one); file transfer in monitor direction (contract 1.1: `files` in fixtures, the `file-get` operation, a file server in the lib60870 adapter); commands of six types with and without time tag, select-before-operate and deactivation, counter interrogation, clock synchronization, time-tagged reports on command, `k`/`w` at 1, the idle test, concurrent sessions.
 
 Open, each as a fixture or operation that every published adapter can serve:
 
@@ -69,10 +74,10 @@ Open, each as a fixture or operation that every published adapter can serve:
 - Sequence-of-elements (SQ = 1) answers to an interrogation
 - Interrogation groups
 - Spontaneous data to all sessions, for redundancy scenarios
-- TLS, where both stacks support it
+- File transfer in control direction (upload), the directory, and a file server on a second stack
+- TLS, where at least two stacks support it
 
 ## Phase 7 - Release qualification (open)
 
-- Exercise the release workflow end to end on the first tag
 - Image scanning and SBOMs attached to releases
 - A compatibility report generated from the self-test documents

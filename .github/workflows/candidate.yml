@@ -7,7 +7,7 @@ run-name: "Candidate upstream probe by @${{ github.actor }}"
 # mutated.
 #
 # A candidate is tested like a release: smoke test plus the cross-stack
-# self-test against the pinned other stack. Bugs of a specific upstream
+# self-test against the pinned other stacks. Bugs of a specific upstream
 # version listed in tests/known-bugs.tsv are reported as known rather than as
 # failures, so one upstream bug does not hide whether everything else works.
 on:
@@ -17,6 +17,14 @@ on:
 
 permissions:
   contents: read
+
+env:
+  # Nothing is pulled from Docker Hub: anonymous pulls are rate limited per
+  # runner address and its token service times out under load. Base images
+  # (pinned by digest) and build tooling come from Google's mirror of it, and
+  # every registry operation is retried on transient failures (scripts/retry.sh).
+  BASE_REGISTRY: mirror.gcr.io/library
+  TOOLS_REGISTRY: mirror.gcr.io
 
 jobs:
   candidate-lib60870:
@@ -37,9 +45,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
 
       - name: Resolve mz-automation/lib60870 pin vs upstream
         id: resolve
@@ -144,9 +149,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
       - name: Resolve org.openmuc:j60870 pin vs Maven Central
         id: resolve
         run: |
@@ -200,10 +202,100 @@ jobs:
           path: selftest.log
           if-no-files-found: ignore
 
+  candidate-wendy512:
+    name: wendy512
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      pin: ${{ steps.resolve.outputs.pin }}
+      latest: ${{ steps.resolve.outputs.latest }}
+      engine_pin: ${{ steps.resolve.outputs.engine_pin }}
+      engine_latest: ${{ steps.resolve.outputs.engine_latest }}
+      update: ${{ steps.resolve.outputs.update }}
+      test: ${{ steps.test.outcome }}
+      result: ${{ steps.test.outputs.result }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Resolve wendy512/iec104 and wendy512/go-iecp5 pins vs upstream
+        id: resolve
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          dockerfile = Path("adapters/wendy512/Dockerfile").read_text()
+
+          def arg(name):
+              m = re.search(rf"^ARG {name}=(.+)$", dockerfile, re.M)
+              if not m:
+                  raise SystemExit(f"could not read ARG {name} from the wendy512 Dockerfile")
+              return m.group(1).strip()
+
+          semver = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+
+          def tags(repo):
+              """Release tags of repo as {tag: commit}."""
+              out = subprocess.check_output(["git", "ls-remote", "--tags", repo], text=True)
+              commits = {}
+              for line in out.splitlines():
+                  sha, ref = line.split()
+                  tag = ref.removeprefix("refs/tags/")
+                  if tag.endswith("^{}"):
+                      commits[tag[:-3]] = sha
+                  else:
+                      commits.setdefault(tag, sha)
+              return {t: c for t, c in commits.items() if semver.match(t)}
+
+          def newest(found):
+              return max(found, key=lambda t: tuple(int(x) for x in semver.match(t).groups()), default="")
+
+          pin, engine_pin = arg("IEC104_VERSION"), arg("GOIECP5_VERSION")
+          lib = tags("https://github.com/wendy512/iec104.git")
+          engine = tags("https://github.com/wendy512/go-iecp5.git")
+          latest, engine_latest = newest(lib), newest(engine)
+
+          # A newer tag on the same commit is the same code: not an update.
+          def moved(found, have, want):
+              return bool(want) and found.get(have) != found.get(want)
+
+          update = "yes" if moved(lib, pin, latest) or moved(engine, engine_pin, engine_latest) else "no"
+
+          print(f"pin={pin}")
+          print(f"latest={latest}")
+          print(f"engine_pin={engine_pin}")
+          print(f"engine_latest={engine_latest}")
+          print(f"update={update}")
+          print(f"resolved iec104 pin={pin} latest={latest}; go-iecp5 pin={engine_pin} "
+                f"latest={engine_latest}; update={update}", file=sys.stderr)
+          PY
+
+      - name: Build and self-test at the latest releases
+        id: test
+        if: steps.resolve.outputs.update == 'yes'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          make candidate-wendy512 \
+            IEC104_CANDIDATE="${{ steps.resolve.outputs.latest }}" \
+            GOIECP5_CANDIDATE="${{ steps.resolve.outputs.engine_latest }}" 2>&1 | tee selftest.log
+          echo "result=$(grep -E '^\[interop\] [0-9]+ passed' selftest.log | tail -1 | sed 's/^\[interop\] //')" >> "$GITHUB_OUTPUT"
+
+      - name: Upload self-test log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: candidate-wendy512
+          path: selftest.log
+          if-no-files-found: ignore
+
   summary:
     name: Decision table
     runs-on: ubuntu-latest
-    needs: [candidate-lib60870, candidate-j60870]
+    needs: [candidate-lib60870, candidate-j60870, candidate-wendy512]
     if: always()
     steps:
       - name: Write pin-vs-latest summary
@@ -224,6 +316,13 @@ jobs:
           J_KNOWN: ${{ needs.candidate-j60870.outputs.known }}
           J_TEST: ${{ needs.candidate-j60870.outputs.test }}
           J_RESULT: ${{ needs.candidate-j60870.outputs.result }}
+          W_PIN: ${{ needs.candidate-wendy512.outputs.pin }}
+          W_LATEST: ${{ needs.candidate-wendy512.outputs.latest }}
+          W_ENGINE_PIN: ${{ needs.candidate-wendy512.outputs.engine_pin }}
+          W_ENGINE_LATEST: ${{ needs.candidate-wendy512.outputs.engine_latest }}
+          W_UPDATE: ${{ needs.candidate-wendy512.outputs.update }}
+          W_TEST: ${{ needs.candidate-wendy512.outputs.test }}
+          W_RESULT: ${{ needs.candidate-wendy512.outputs.result }}
         run: |
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import os
@@ -245,6 +344,7 @@ jobs:
           lib_update = env("LIB_UPDATE", "?")
           j_pin, j_latest, j_update = env("J_PIN", "?"), env("J_LATEST", "?"), env("J_UPDATE", "?")
           j_known = env("J_KNOWN")
+          w_update = env("W_UPDATE", "?")
 
           print("## Upstream candidate report")
           print()
@@ -266,6 +366,15 @@ jobs:
               f"`{j_pin}` | `{j_latest}` | "
               f"{tested(env('J_TEST'), env('J_RESULT'), j_update == 'no')} | **{j_update}** |"
           )
+          print(
+              f"| [wendy512/iec104](https://github.com/wendy512/iec104) | Go module | "
+              f"`{env('W_PIN', '?')}` | `{env('W_LATEST', '?')}` | "
+              f"{tested(env('W_TEST'), env('W_RESULT'), w_update == 'no')} | **{w_update}** |"
+          )
+          print(
+              f"| [wendy512/go-iecp5](https://github.com/wendy512/go-iecp5), its engine | Go module | "
+              f"`{env('W_ENGINE_PIN', '?')}` | `{env('W_ENGINE_LATEST', '?')}` | tested with iec104 | |"
+          )
           print()
           if j_known:
               print("### Known bugs of the latest release")
@@ -280,12 +389,14 @@ jobs:
           print()
           print("- lib60870: `adapters/lib60870/Dockerfile` (`LIB60870_VERSION`, `LIB60870_SHA`), mirrored in `versions.yaml`")
           print("- j60870: `adapters/openmuc/Dockerfile` (`J60870_VERSION`) and `adapters/openmuc/pom.xml`, mirrored in `versions.yaml`")
+          print("- wendy512: `adapters/wendy512/Dockerfile` (`IEC104_VERSION`, `GOIECP5_VERSION`) and `adapters/wendy512/go.mod` "
+                "with `go.sum`, mirrored in `versions.yaml`")
           print()
           print("### How to read this")
           print()
           print("- **Update? = yes** means the pin is not the latest upstream release.")
           print("- **Candidate self-test** builds the adapter on that version and runs the smoke test and the "
-                "cross-stack self-test against the pinned other stack. `success`: the pin can move. "
+                "cross-stack self-test against the pinned other stacks. `success`: the pin can move. "
                 "`failure`: read the uploaded log before bumping.")
           print("- A `failure` saying *known bug ... did not reproduce* is good news: the upstream bug is fixed. "
                 "Remove the entry from `tests/known-bugs.tsv` and move the pin.")

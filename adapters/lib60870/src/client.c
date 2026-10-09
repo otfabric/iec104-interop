@@ -27,7 +27,64 @@ static struct {
     IEC60870_5_TypeID expectType;
     int expectIoa;
     bool expectRead;
+    struct FileEvent* fileEvents; /* file transfer ASDUs, for the file operation */
+    int fileEventCount;
+    int fileEventNext;
 } st = { .lock = PTHREAD_MUTEX_INITIALIZER, .changed = PTHREAD_COND_INITIALIZER };
+
+/* One received file transfer ASDU, reduced to what the procedure needs. */
+typedef struct FileEvent {
+    IEC60870_5_TypeID type;
+    int cot;
+    bool negative;
+    int nos;
+    int length;    /* LOF of file ready and section ready */
+    int qualifier; /* FRQ, SRQ, LSQ */
+    int checksum;
+    int size; /* of data */
+    uint8_t data[256];
+} FileEvent;
+
+/* Called with st.lock held. */
+static void pushFileEvent(CS101_ASDU asdu)
+{
+    IEC60870_5_TypeID type = CS101_ASDU_getTypeID(asdu);
+    if (type < F_FR_NA_1 || type > F_SG_NA_1)
+        return;
+    InformationObject io = CS101_ASDU_getElement(asdu, 0);
+    if (io == NULL)
+        return;
+    st.fileEvents = realloc(st.fileEvents, (size_t)(st.fileEventCount + 1) * sizeof(FileEvent));
+    FileEvent* e = &st.fileEvents[st.fileEventCount++];
+    memset(e, 0, sizeof(*e));
+    e->type = type;
+    e->cot = CS101_ASDU_getCOT(asdu);
+    e->negative = CS101_ASDU_isNegative(asdu);
+    switch (type) {
+    case F_FR_NA_1:
+        e->length = (int)FileReady_getLengthOfFile((FileReady)io);
+        e->qualifier = FileReady_getFRQ((FileReady)io);
+        break;
+    case F_SR_NA_1:
+        e->nos = SectionReady_getNameOfSection((SectionReady)io);
+        e->length = (int)SectionReady_getLengthOfSection((SectionReady)io);
+        e->qualifier = SectionReady_getSRQ((SectionReady)io);
+        break;
+    case F_LS_NA_1:
+        e->nos = FileLastSegmentOrSection_getNameOfSection((FileLastSegmentOrSection)io);
+        e->qualifier = FileLastSegmentOrSection_getLSQ((FileLastSegmentOrSection)io);
+        e->checksum = FileLastSegmentOrSection_getCHS((FileLastSegmentOrSection)io);
+        break;
+    case F_SG_NA_1:
+        e->nos = FileSegment_getNameOfSection((FileSegment)io);
+        e->size = FileSegment_getLengthOfSegment((FileSegment)io);
+        memcpy(e->data, FileSegment_getSegmentData((FileSegment)io), (size_t)e->size);
+        break;
+    default:
+        break;
+    }
+    InformationObject_destroy(io);
+}
 
 static void connectionHandler(void* parameter, CS104_Connection connection, CS104_ConnectionEvent ev)
 {
@@ -56,6 +113,7 @@ static bool asduHandler(void* parameter, int address, CS101_ASDU asdu)
     pthread_mutex_lock(&st.lock);
     cJSON_AddItemToArray(st.asdus, j);
     st.asduCount++;
+    pushFileEvent(asdu);
     if (st.expectType != 0 && type == st.expectType) {
         bool unknown = cot >= CS101_COT_UNKNOWN_TYPE_ID && cot <= CS101_COT_UNKNOWN_IOA;
         if (cot == CS101_COT_ACTIVATION_CON || cot == CS101_COT_DEACTIVATION_CON || unknown) {
@@ -121,6 +179,7 @@ static bool hasTermination(int a) { (void)a; return st.terminated || st.negative
 static bool hasReadAnswer(int a) { (void)a; return st.readAnswered || st.negativeCot != 0; }
 static bool hasAsdus(int n) { return n > 0 && st.asduCount >= n; }
 static bool never(int a) { (void)a; return false; }
+static bool hasFileEvent(int a) { (void)a; return st.fileEventNext < st.fileEventCount; }
 
 static bool parseBool(const char* s, bool* out)
 {
@@ -235,6 +294,120 @@ static bool awaitTermination(int timeoutMs)
     return true;
 }
 
+/* ---- the file operation: download in monitor direction ---- */
+
+static bool sendFileCall(CS104_Connection con, int oa, int ca, int ioa, int nof, int nos, int scq)
+{
+    CS101_ASDU a = CS101_ASDU_create(CS104_Connection_getAppLayerParameters(con), false, CS101_COT_FILE_TRANSFER, oa,
+        ca, false, false);
+    InformationObject io = (InformationObject)FileCallOrSelect_create(NULL, ioa, (uint16_t)nof, (uint8_t)nos,
+        (uint8_t)scq);
+    CS101_ASDU_addInformationObject(a, io);
+    bool sent = CS104_Connection_sendASDU(con, a);
+    InformationObject_destroy(io);
+    CS101_ASDU_destroy(a);
+    return sent;
+}
+
+static bool sendFileAck(CS104_Connection con, int oa, int ca, int ioa, int nof, int nos, int afq)
+{
+    CS101_ASDU a = CS101_ASDU_create(CS104_Connection_getAppLayerParameters(con), false, CS101_COT_FILE_TRANSFER, oa,
+        ca, false, false);
+    InformationObject io = (InformationObject)FileACK_create(NULL, ioa, (uint16_t)nof, (uint8_t)nos, (uint8_t)afq);
+    CS101_ASDU_addInformationObject(a, io);
+    bool sent = CS104_Connection_sendASDU(con, a);
+    InformationObject_destroy(io);
+    CS101_ASDU_destroy(a);
+    return sent;
+}
+
+/* Waits for the next file transfer ASDU. */
+static bool nextFileEvent(FileEvent* out, int timeoutMs, const char* what)
+{
+    if (!waitFor(hasFileEvent, 0, timeoutMs)) {
+        if (st.closed)
+            return failOp("connection-lost", "connection closed during the file transfer%.0d", 0);
+        snprintf(errorMessage, sizeof(errorMessage), "the station did not send %s", what);
+        errorCode = "timeout";
+        return false;
+    }
+    pthread_mutex_lock(&st.lock);
+    *out = st.fileEvents[st.fileEventNext++];
+    pthread_mutex_unlock(&st.lock);
+    return true;
+}
+
+typedef struct {
+    uint8_t* data;
+    int length;   /* announced by file ready */
+    int received;
+    int sections;
+} Download;
+
+/* Select, call, receive and acknowledge one file. See docs/CONTAINER_CONTRACT.md. */
+static bool downloadFile(CS104_Connection con, int oa, int ca, int ioa, int nof, int timeoutMs, Download* d)
+{
+    FileEvent e;
+    sendFileCall(con, oa, ca, ioa, nof, 0, 1 /* select file */);
+    if (!nextFileEvent(&e, timeoutMs, "file ready"))
+        return false;
+    /* A refusal is the mirrored call with an "unknown ..." cause, or a
+     * file ready with the negative bit. */
+    if (e.type == F_SC_NA_1 || e.negative || (e.type == F_FR_NA_1 && (e.qualifier & 0x80))) {
+        st.negativeCot = e.cot;
+        return failOp("negative-confirmation", "the station refused the file (cause %d)", e.cot);
+    }
+    if (e.type != F_FR_NA_1)
+        return failOp("failed", "expected file ready, got type %d", e.type);
+    d->length = e.length;
+    d->data = malloc((size_t)d->length + 1);
+
+    sendFileCall(con, oa, ca, ioa, nof, 0, 2 /* request file */);
+    for (;;) {
+        if (!nextFileEvent(&e, timeoutMs, "section ready or last section"))
+            return false;
+        if (e.type == F_LS_NA_1 && (e.qualifier == 1 || e.qualifier == 2)) {
+            /* Last section: the checksum covers the whole file. */
+            uint8_t sum = 0;
+            for (int i = 0; i < d->received; i++)
+                sum += d->data[i];
+            bool good = sum == e.checksum && d->received == d->length;
+            sendFileAck(con, oa, ca, ioa, nof, e.nos, good ? 1 : 2);
+            if (!good)
+                return failOp("failed", "file checksum or length mismatch after %d octets", d->received);
+            return true;
+        }
+        if (e.type != F_SR_NA_1)
+            return failOp("failed", "expected section ready, got type %d", e.type);
+        if (e.qualifier & 0x80)
+            return failOp("failed", "section %d is not ready", e.nos);
+        int nos = e.nos, sectionLength = e.length, sectionStart = d->received;
+        d->sections++;
+        sendFileCall(con, oa, ca, ioa, nof, nos, 6 /* request section */);
+        for (;;) {
+            if (!nextFileEvent(&e, timeoutMs, "a segment or last segment"))
+                return false;
+            if (e.type == F_SG_NA_1) {
+                if (d->received + e.size > d->length)
+                    return failOp("failed", "more data than the announced %d octets", d->length);
+                memcpy(d->data + d->received, e.data, (size_t)e.size);
+                d->received += e.size;
+                continue;
+            }
+            if (e.type != F_LS_NA_1 || (e.qualifier != 3 && e.qualifier != 4))
+                return failOp("failed", "expected a segment or last segment, got type %d", e.type);
+            uint8_t sum = 0;
+            for (int i = sectionStart; i < d->received; i++)
+                sum += d->data[i];
+            bool good = sum == e.checksum && d->received - sectionStart == sectionLength;
+            sendFileAck(con, oa, ca, ioa, nof, nos, good ? 3 : 4);
+            if (!good)
+                return failOp("failed", "checksum or length mismatch in section %d", nos);
+            break;
+        }
+    }
+}
+
 int runClient(const char* op, Args* args)
 {
     const char* host = argString(args, "--host", NULL);
@@ -251,7 +424,19 @@ int runClient(const char* op, Args* args)
 
     /* Operation arguments are parsed before connecting so that a usage
      * error never touches the network. */
-    enum { OP_CONNECT, OP_INTERROGATE, OP_COUNTERS, OP_READ, OP_CLOCK, OP_TEST, OP_COMMAND, OP_MONITOR } kind;
+    enum {
+        OP_CONNECT,
+        OP_INTERROGATE,
+        OP_COUNTERS,
+        OP_READ,
+        OP_CLOCK,
+        OP_TEST,
+        OP_COMMAND,
+        OP_MONITOR,
+        OP_FILE
+    } kind;
+    int fileName = 1;
+    Download download = { NULL, 0, 0, 0 };
     int qoi = 20, qcc = 5, ioa = 0, holdMs = 0, durationMs = 1000, maxAsdus = 0, qualifier = 0;
     uint64_t clockMs = Hal_getTimeInMs();
     const char* mode = "direct";
@@ -309,6 +494,14 @@ int runClient(const char* op, Args* args)
             return EXIT_USAGE;
         }
         InformationObject_destroy(probe);
+    } else if (!strcmp(op, "file-get")) {
+        kind = OP_FILE;
+        if (!argInt(args, "--ioa", 0, &ioa) || !argInt(args, "--name", 1, &fileName))
+            return EXIT_USAGE;
+        if (ioa < 1 || fileName < 1 || fileName > 65535) {
+            logf_("file-get: --ioa is required; --name is 1..65535");
+            return EXIT_USAGE;
+        }
     } else if (!strcmp(op, "monitor")) {
         kind = OP_MONITOR;
         if (!argInt(args, "--duration-ms", 1000, &durationMs) || !argInt(args, "--max-asdus", 0, &maxAsdus))
@@ -425,6 +618,10 @@ int runClient(const char* op, Args* args)
         break;
     }
 
+    case OP_FILE:
+        ok = downloadFile(con, oa, ca, ioa, fileName, timeoutMs, &download);
+        break;
+
     case OP_MONITOR:
         waitFor(hasAsdus, maxAsdus, durationMs);
         ok = !st.closed || failOp("connection-lost", "connection closed while monitoring%.0d", 0);
@@ -458,6 +655,17 @@ report:
         cJSON_AddBoolToObject(r, "stopdtConfirmed", st.stopdtCon);
     cJSON_AddItemToObject(r, "confirmations", st.confirmations);
     cJSON_AddBoolToObject(r, "terminated", st.terminated);
+    if (kind == OP_FILE) {
+        cJSON* f = cJSON_AddObjectToObject(r, "file");
+        char digest[65];
+        sha256Hex(download.data ? download.data : (const uint8_t*)"", (size_t)download.received, digest);
+        cJSON_AddNumberToObject(f, "ioa", ioa);
+        cJSON_AddNumberToObject(f, "name", fileName);
+        cJSON_AddNumberToObject(f, "length", download.length);
+        cJSON_AddNumberToObject(f, "received", download.received);
+        cJSON_AddNumberToObject(f, "sections", download.sections);
+        cJSON_AddStringToObject(f, "sha256", digest);
+    }
     cJSON_AddItemToObject(r, "asdus", st.asdus);
     cJSON_AddNumberToObject(r, "elapsedMs", (double)(Hal_getTimeInMs() - begin));
     emitJson(r);

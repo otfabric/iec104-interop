@@ -11,9 +11,13 @@ next to the licence texts.
 | Repository tooling, fixtures, schemas, scripts, documentation | MIT ([LICENSE](LICENSE)) |
 | `adapters/lib60870/` (links lib60870-C) | GPL-3.0-or-later |
 | `adapters/openmuc/` (links j60870) | GPL-3.0-or-later |
+| `adapters/wendy512/` (links wendy512/iec104 and go-iecp5) | GPL-3.0-or-later |
 | The published images | GPL-3.0 (they contain the libraries below) |
 
-The adapter programs are derivative works of GPL-3.0 libraries and carry
+The lib60870 and openmuc adapter programs are derivative works of GPL-3.0
+libraries. The wendy512 adapter links an Apache-2.0 and an LGPL-3.0 library,
+both of which may be combined into a GPL-3.0 work, and is under the same
+licence as the other two so that one licence covers `adapters/`. All carry
 `SPDX-License-Identifier: GPL-3.0-or-later`. Nothing in this repository is
 linked into a consumer: a library that tests against the images talks to them
 over TCP and reads their output, and is not affected by their licence.
@@ -43,6 +47,25 @@ This repository uses the GPL-3.0 release only.
 
 Licence text in the image: `/licenses/j60870/COPYING`.
 
+## Image `iec104-interop-wendy512`
+
+| Component | Version | Licence | Source |
+|-----------|---------|---------|--------|
+| wendy512/iec104 | v1.0.4, commit `8fb65c83865c94cf37a89d12c9c42dd8c1807cc4` | Apache-2.0 | https://github.com/wendy512/iec104 |
+| wendy512/go-iecp5 (a descendant of thinkgos/go-iecp5) | v1.2.6, commit `2269ee79a5e137847bbdc811be71a1064d303560` | LGPL-3.0 | https://github.com/wendy512/go-iecp5 |
+| Go standard library and runtime | 1.27.2 | BSD-3-Clause | https://go.dev |
+| Adapter | this repository, `adapters/wendy512/` | GPL-3.0-or-later | https://github.com/otfabric/iec104-interop |
+| Base system | Debian trixie-slim | various; see `/usr/share/doc/*/copyright` in the image | https://www.debian.org |
+
+Licence texts in the image: `/licenses/iec104/LICENSE`,
+`/licenses/go-iecp5/LICENSE` and `/licenses/GPL-3.0.txt`.
+
+go-iecp5 is linked statically into the adapter binary. The LGPL asks that a
+recipient can relink the work against a modified library: the adapter's
+source and build instructions are in this repository, and
+`docker build -f adapters/wendy512/Dockerfile .` with another
+`GOIECP5_VERSION`, or with a `replace` directive in `go.mod`, does that.
+
 ## Corresponding source
 
 For every published image the complete corresponding source is:
@@ -51,8 +74,8 @@ For every published image the complete corresponding source is:
    `org.opencontainers.image.version` label and by `print-capabilities`
    (`adapterVersion`), which contains the adapter source and the build
    instructions (the Dockerfile); and
-2. the upstream sources at exactly the versions pinned by that Dockerfile and
-   `adapters/openmuc/pom.xml`, recorded in [versions.yaml](versions.yaml) and
+2. the upstream sources at exactly the versions pinned by that Dockerfile,
+   `adapters/openmuc/pom.xml` and `adapters/wendy512/go.mod`, recorded in [versions.yaml](versions.yaml) and
    in the `manifest.json` of the release.
 
 `docker build -f adapters/<adapter>/Dockerfile .` at the release tag

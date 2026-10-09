@@ -1,11 +1,21 @@
 # Container contract
 
-Version: **1.0** (`schemaVersion` of every document; `contract_version` in
-[versions.yaml](../versions.yaml))
+Version: **1.1** (`contract_version` in [versions.yaml](../versions.yaml))
 
 Every adapter image exposes the same commands, flags, JSON documents and exit
 codes. Consumers depend on this document, not on any adapter's source. A
-change that breaks it bumps the major version.
+change that breaks it bumps the major version; an addition bumps the minor
+one. Documents carry `schemaVersion` `"1.0"`: it names the compatible line
+and changes only with the major version.
+
+| Version | Change |
+|---------|--------|
+| 1.1 | The `file-get` operation, its `file` result and the file transfer ASDU documents; the `file-transfer` server event; `files` in fixtures; the features `fileServer`, `fileClient` and `dataTransferEvents` |
+| 1.0 | First release |
+
+Not every adapter has every operation or event. What an image lacks it says
+in [`print-capabilities`](#print-capabilities), and an operation it does not
+list in `clientOperations` is a usage error (exit 2).
 
 What a *station* does with a request is defined by its fixture: see
 [FIXTURES.md](FIXTURES.md).
@@ -64,7 +74,9 @@ Accepted by `server` and by every `client` operation. Times are in seconds.
 
 `1 <= w <= k <= 32767`, `0 < t2 < t1`. Whether `--t3 0` (idle test off) is
 accepted is adapter specific: lib60870 accepts it, OpenMUC requires
-`t3 >= t1`. See [CAPABILITIES.md](CAPABILITIES.md).
+`t3 >= t1`, wendy512 requires `t3 >= 1` and every timer at most 255 seconds.
+A value the library cannot run with is a usage error, never replaced by
+another one. See [CAPABILITIES.md](CAPABILITIES.md).
 
 ## `server`
 
@@ -103,14 +115,15 @@ One JSON object per line on stdout.
 |---------|--------------|------|
 | `ready` | `adapter`, `address`, `fixture`, `commonAddress` | Once, when the station accepts connections |
 | `connection-opened` | `peer` (`ip:port`) | A controlling station connected |
-| `data-transfer-started` | `peer` | STARTDT confirmed |
-| `data-transfer-stopped` | `peer` | STOPDT confirmed |
+| `data-transfer-started` | `peer` | STARTDT confirmed. Only with the feature `dataTransferEvents` |
+| `data-transfer-stopped` | `peer` | STOPDT confirmed. Only with the feature `dataTransferEvents` |
 | `connection-closed` | `peer` | The connection ended |
 | `interrogation` | `commonAddress`, `qoi`, `accepted` | C_IC_NA_1 received |
 | `counter-interrogation` | `commonAddress`, `qcc`, `accepted` | C_CI_NA_1 received |
 | `read` | `ioa`, `accepted` | C_RD_NA_1 received |
 | `clock-sync` | `time` | C_CS_NA_1 received |
 | `command` | `type`, `ioa`, `cot`, `value`, `select`, `outcome` | A process command for the station was received |
+| `file-transfer` | `ioa`, `name`, `success` | A file transfer ended: acknowledged by the controlling station (`success` true) or not. Only with the feature `fileServer` |
 | `stopped` | | Once, after a clean stop |
 
 `command.type` is the type identification on the wire (`C_SC_TA_1` for a
@@ -162,6 +175,7 @@ the operation, close the connection.
 | `test-command` | | C_TS_TA_1 activation | Positive activation confirmation |
 | `command` | see below | A process command | See below |
 | `monitor` | `--duration-ms N` (1000), `--max-asdus N` (0: no limit) | Nothing | The duration passed or the number of ASDUs was received, with the connection still up |
+| `file-get` | `--ioa N` (required), `--name N` (1) | The file transfer procedure in monitor direction: see [below](#file-get) | The whole file arrived, every checksum and length matched and the file was acknowledged. Only with the feature `fileClient` |
 
 `command` flags:
 
@@ -185,6 +199,30 @@ A value that is syntactically valid but not permitted by the protocol (a
 double command state of 0 or 3) is sent as is: refusing it is the station's
 job.
 
+### `file-get`
+
+Downloads one file with the procedure of IEC 60870-5-101 7.4.11. Every ASDU
+has cause 13 (file transfer); `--ioa` is the address of the file and `--name`
+its name of file.
+
+| Step | Controlling station | Controlled station |
+|-----:|---------------------|--------------------|
+| 1 | F_SC_NA_1, SCQ 1 (select file) | F_FR_NA_1 (file ready) with the length of the file |
+| 2 | F_SC_NA_1, SCQ 2 (request file) | F_SR_NA_1 (section ready) with the length of section 1 |
+| 3 | F_SC_NA_1, SCQ 6 (request section) | F_SG_NA_1 segments, then F_LS_NA_1 with LSQ 3 (last segment) and the checksum of the section |
+| 4 | F_AF_NA_1, AFQ 3 (section acknowledged) | F_SR_NA_1 for the next section: back to step 3. After the last section F_LS_NA_1 with LSQ 1 (last section) and the checksum of the file |
+| 5 | F_AF_NA_1, AFQ 1 (file acknowledged) | |
+
+A checksum is the sum of the octets modulo 256. The client checks the
+checksum and the length of every section and of the file and answers a
+mismatch with AFQ 4 or 2 (not acknowledged) and the error `failed`.
+
+A station that refuses the selection (unknown address, wrong name) answers
+with the mirrored F_SC_NA_1 and cause 47, or with a file ready whose FRQ has
+the negative bit: the error is `negative-confirmation`. The refusal is in
+`asdus`; `confirmations` stays empty, since it is not a mirror with cause 7
+or 9.
+
 ### Result document
 
 Exactly one JSON object on one line of stdout, for every invocation that got
@@ -202,6 +240,7 @@ past argument parsing, including failures.
 | `stopdtConfirmed` | boolean | `connect` only: STOPDT con was received |
 | `confirmations` | array | `{ "cot", "negative" }` for each mirror of the request that confirms or refuses it, in order |
 | `terminated` | boolean | An activation termination of the request was received |
+| `file` | object | `file-get` only: `ioa`, `name`, `length` (announced by file ready), `received` (octets that arrived), `sections` (sections called) and `sha256` (lower-case hex of what arrived) |
 | `asdus` | array | Every ASDU received, in order: see [ASDU documents](#asdu-documents) |
 | `elapsedMs` | number | Wall-clock duration |
 
@@ -271,6 +310,20 @@ tag is set.
 | `C_CS_NA_1` | `time` |
 | `C_TS_TA_1` | `counter`, `time` |
 | `M_EI_NA_1` | `coi` |
+| `F_FR_NA_1` | `nof`, `lof`, `frq` |
+| `F_SR_NA_1` | `nof`, `nos`, `lof`, `srq` |
+| `F_SC_NA_1` | `nof`, `nos`, `scq` |
+| `F_LS_NA_1` | `nof`, `nos`, `lsq`, `chs` |
+| `F_AF_NA_1` | `nof`, `nos`, `afq` |
+| `F_SG_NA_1` | `nof`, `nos`, `data` (the segment, lower-case hex) |
+
+`nof` and `nos` are the name of file and of section, `lof` the length of the
+file or section; the qualifiers (`frq`, `srq`, `scq`, `lsq`, `afq`) are the
+raw octets and `chs` is the checksum.
+
+An adapter reports what its library hands it. A library that drops a type on
+reception leaves no trace of it in `asdus`: wendy512 cannot receive the
+CP56Time2a command types or F_SG_NA_1 and declares so in its capabilities.
 
 `quality` is an array of flag abbreviations in this order: `OV`, `BL`, `SB`,
 `NT`, `IV`; for integrated totals `CY`, `CA`, `IV`. An empty array means

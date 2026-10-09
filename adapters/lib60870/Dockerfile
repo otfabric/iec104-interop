@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # iec104-interop adapter for MZ Automation lib60870-C.
 #
 # Build from the repository root:
@@ -8,12 +7,16 @@
 # and this image are distributed under GPL-3.0 as well; see
 # THIRD_PARTY_NOTICES.md. Upstream pins are mirrored in versions.yaml.
 
+# Where the base images come from. They are pinned by digest, so a mirror of
+# Docker Hub serves exactly the same images; CI uses one to stay clear of
+# Docker Hub's pull rate limit (see the Makefile).
+ARG BASE_REGISTRY=docker.io/library
 ARG DEBIAN_DIGEST=sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 
 # ---------------------------------------------------------------------------
 # Stage 1: lib60870-C from a pinned commit
 # ---------------------------------------------------------------------------
-FROM debian:trixie-slim@${DEBIAN_DIGEST} AS lib60870-build
+FROM ${BASE_REGISTRY}/debian:trixie-slim@${DEBIAN_DIGEST} AS lib60870-build
 
 ARG LIB60870_REPO=https://github.com/mz-automation/lib60870.git
 ARG LIB60870_VERSION=v2.4.1
@@ -50,7 +53,7 @@ RUN cmake .. \
 # ---------------------------------------------------------------------------
 # Stage 2: the adapter
 # ---------------------------------------------------------------------------
-FROM debian:trixie-slim@${DEBIAN_DIGEST} AS adapter-build
+FROM ${BASE_REGISTRY}/debian:trixie-slim@${DEBIAN_DIGEST} AS adapter-build
 
 ARG LIB60870_VERSION=v2.4.1
 ARG LIB60870_SHA=7a388e3e133999e1ca77ba7521d55d074b7cd2bc
@@ -80,7 +83,7 @@ RUN cmake .. \
 # ---------------------------------------------------------------------------
 # Stage 3: runtime
 # ---------------------------------------------------------------------------
-FROM debian:trixie-slim@${DEBIAN_DIGEST} AS runtime
+FROM ${BASE_REGISTRY}/debian:trixie-slim@${DEBIAN_DIGEST} AS runtime
 
 ARG ADAPTER_VERSION=dev
 
