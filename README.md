@@ -1,9 +1,7 @@
-# otfabric/iec104-interop - IEC 60870-5-104 Interoperability Infrastructure
+# iec104-interop — IEC 60870-5-104 (IEC 104) Interoperability Testing with Docker
 
-Dockerized IEC 60870-5-104 reference clients and servers, built on
-established third-party implementations, behind one container contract and
-one set of fixtures. An IEC 104 library is tested against them by pulling
-images; nothing here is linked into it.
+A Docker-based interoperability testing framework for IEC 60870-5-104 (IEC 104), providing independent SCADA client and server implementations, deterministic fixtures, and automated protocol compatibility testing.
+Test IEC 104 libraries against established implementations including MZ Automation lib60870 and OpenMUC j60870. Reference implementations are independently containerized, enabling reproducible testing across platforms without integrating third-party protocol stacks into production applications.
 
 | Adapter | Implementation | Language | Server | Client | Image |
 |---------|----------------|----------|:------:|:------:|-------|
@@ -22,13 +20,15 @@ Planned: Eclipse OneOFour (Java) and Fraunhofer iec104-python. See
 
 ## Table of contents
 
-- [What this repository is, and is not](#what-this-repository-is-and-is-not)
-- [Quick start](#quick-start)
-- [Using the images from a library's tests](#using-the-images-from-a-librarys-tests)
-- [Repository layout](#repository-layout)
-- [Development](#development)
-- [Security](#security)
-- [License](#license)
+- [iec104-interop — IEC 60870-5-104 (IEC 104) Interoperability Testing with Docker](#iec104-interop--iec-60870-5-104-iec-104-interoperability-testing-with-docker)
+  - [Table of contents](#table-of-contents)
+  - [What this repository is, and is not](#what-this-repository-is-and-is-not)
+  - [Quick start](#quick-start)
+  - [Using the images from a library's tests](#using-the-images-from-a-librarys-tests)
+  - [Repository layout](#repository-layout)
+  - [Development](#development)
+  - [Security](#security)
+  - [License](#license)
 
 ## What this repository is, and is not
 
