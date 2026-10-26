@@ -33,7 +33,7 @@ Delivery in phases, each with an acceptance gate. Status as of 2026-10-26.
 - Java adapter on j60870 1.7.2, both roles, same operations
 - Cross-stack self-test over all four pairings: expected outcome per case, and identical result documents across pairings
 
-**Gate:** both stacks satisfy the baseline contract in every direction. Met (249 checks). Findings are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md), notably that j60870 1.8.0 cannot receive a read command, which is why 1.7.2 is pinned.
+**Gate:** both stacks satisfy the baseline contract in every direction. Met (249 checks). Findings are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md), notably that j60870 1.8.0 cannot receive a read command. 1.7.2 was pinned for that until v0.3.0; v0.3.1 moved to 1.8.0 with the bug listed in `tests/known-bugs.tsv`.
 
 ## Phase 4 - First published images (done)
 
@@ -60,7 +60,7 @@ Evaluation: both roles exist; the latest tag is v0.3.0 (Apache-2.0, with Apache-
 - Go adapter, both roles, every operation of contract 1.1, time-tagged commands, file transfer as station and as controlling station.
 - Contract 1.2: the security flags, the feature `secureAuthentication` and secure self-tests.
 
-**Gate:** smoke test and cross-stack self-test for the roles it declares, and the secure cases. Met (36 smoke checks; 1223 cross-stack checks over sixteen pairings, 88 skipped for undeclared capabilities). Findings are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+**Gate:** smoke test and cross-stack self-test for the roles it declares, and the secure cases. Met (36 smoke checks; 1223 cross-stack checks over sixteen pairings on j60870 1.7.2, 88 skipped for undeclared capabilities; on 1.8.0, 1172 passed and 23 were its known read bug). Findings are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
 ### Remaining
 

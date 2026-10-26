@@ -22,7 +22,7 @@ FROM ${BASE_REGISTRY}/maven:3.9-eclipse-temurin-25@${MAVEN_DIGEST} AS build
 
 # The release pin. "make candidate-openmuc" overrides it to try another
 # upstream version without touching the pin.
-ARG J60870_VERSION=1.7.2
+ARG J60870_VERSION=1.8.0
 
 WORKDIR /build
 COPY adapters/openmuc/pom.xml .

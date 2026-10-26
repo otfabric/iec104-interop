@@ -8,14 +8,14 @@ any library that consumes the images.
 
 ## Pinned upstreams
 
-The rule is the latest upstream release. An adapter stays behind only for a
-bug that removes coverage, and then the latest release is still built and
-self-tested as a candidate.
+The rule is the latest upstream release, also when it has a bug: the bug is
+listed in [tests/known-bugs.tsv](../tests/known-bugs.tsv) and described
+below, and the cases it explains count as known bugs instead of failures.
 
 | Adapter | Upstream | Pinned | Latest | Pin | Engine |
 |---------|----------|--------|--------|-----|--------|
 | `lib60870` | [MZ Automation lib60870-C](https://github.com/mz-automation/lib60870) | v2.4.1 | v2.4.1 | commit `7a388e3e133999e1ca77ba7521d55d074b7cd2bc` | independent, C |
-| `openmuc` | [OpenMUC j60870](https://www.openmuc.org/iec-60870-5-104/) | 1.7.2 | 1.8.0 | Maven Central `org.openmuc:j60870:1.7.2` | independent, Java |
+| `openmuc` | [OpenMUC j60870](https://www.openmuc.org/iec-60870-5-104/) | 1.8.0 | 1.8.0 | Maven Central `org.openmuc:j60870:1.8.0` | independent, Java |
 | `wendy512` | [wendy512/iec104](https://github.com/wendy512/iec104) | v1.0.4 | v1.0.4 | Go module `github.com/wendy512/iec104@v1.0.4` (commit `8fb65c83865c94cf37a89d12c9c42dd8c1807cc4`), checksum in `go.sum` | independent, Go |
 | | its engine [wendy512/go-iecp5](https://github.com/wendy512/go-iecp5) | v1.2.6 | v1.2.6 | Go module `github.com/wendy512/go-iecp5@v1.2.6` (commit `2269ee79a5e137847bbdc811be71a1064d303560`), checksum in `go.sum` | |
 | `cbsigma` | [cB-Sigma/iec60870](https://github.com/cB-Sigma/iec60870) | v0.3.0 | v0.3.0 | Go module `github.com/cB-Sigma/iec60870@v0.3.0` (commit `d0cad7ab6b8905d21dca12f4f7364e788c80ae17`), checksum in `go.sum` | independent, Go |
@@ -41,35 +41,33 @@ The tip of go-iecp5 is not probed: its default branch (commit `4499b147`,
 its `go.mod`, so it cannot be built as `github.com/wendy512/go-iecp5`. Only
 its release tags can be.
 
-### Why j60870 is one release behind
+### j60870 1.8.0
 
-1.8.0 cannot receive a read command (first finding below). Staying on 1.7.2
-keeps the read procedure covered on the second independent engine; moving to
-1.8.0 would remove it and gain nothing a test can use:
+1.8.0 (2026-07-17) cannot receive a read command (first finding below). The
+adapter is on 1.8.0 anyway, with the bug listed in
+[tests/known-bugs.tsv](../tests/known-bugs.tsv): the read cases of the
+pairings with openmuc count as known bugs, and every other case must pass as
+it did on 1.7.2. Until v0.3.0 of this repository the adapter was pinned to
+1.7.2 for this bug. A fix is proposed upstream in
+[gythialy/j60870#75](https://github.com/gythialy/j60870/pull/75).
+
+What 1.8.0 changes over 1.7.2, and whether a test could use it:
 
 | Change in 1.8.0 over 1.7.2 | Relevance to interoperability testing |
 |----------------------------|----------------------------------------|
-| Validation of decoded and constructed ASDUs (counts, SQ on commands, unknown cause) | Causes the read regression. Otherwise only affects malformed traffic |
+| Validation of decoded and constructed ASDUs (counts, SQ on commands, unknown cause) | Causes the read regression. Otherwise only affects malformed traffic, which the contract does not send |
 | `ASdu.buildCotResponse` helper | API convenience; nothing new on the wire |
 | Pluggable logging (`org.openmuc.j60870.logging`) | none |
 | Allowed-client check compares addresses instead of strings | none here |
 | Listener kept across repeated STOPDT/STARTDT on a client | none here: one cycle per client run |
 | `C_TS_NA_1` test pattern byte order corrected (AA 55) | none: the type is not used by IEC 60870-5-104 or by the contract |
 
-No type identification, service or transport option was added. The source
-difference is 447 added and 106 removed lines, most of the rest being
-copyright years.
+No type identification, service or transport option was added, so 1.8.0
+brings no new coverage. The source difference is 447 added and 106 removed
+lines, most of the rest being copyright years.
 
-`make candidate-openmuc` builds the adapter on 1.8.0 and runs the same
-self-tests with the read bug listed in
-[tests/known-bugs.tsv](../tests/known-bugs.tsv). Result on 2026-10-09: the
-smoke test passes (29 of 29) and the cross-stack self-test has 226 passes, no
-failure and 11 known-bug hits, all of them read cases. So apart from read,
-1.8.0 behaves exactly as 1.7.2 does in every pairing.
-
-The pin moves to the latest release as soon as a release decodes C_RD_NA_1:
-the candidate run then fails with "known bug did not reproduce", which is the
-signal.
+When a release decodes C_RD_NA_1 again, `make interop` fails with "known bug
+did not reproduce", which is the signal to remove the entry.
 
 ## Cross-stack matrix
 
@@ -81,25 +79,29 @@ and counted as such.
 
 | Client → Server | lib60870 | openmuc | wendy512 | cbsigma |
 |-----------------|:--------:|:-------:|:--------:|:-------:|
-| **lib60870** | pass | pass ¹ | pass ² | pass |
-| **openmuc** | pass | pass ¹ | pass ² | pass |
-| **wendy512** | pass ² | pass ¹ ² | pass ² | pass ² |
-| **cbsigma** | pass | pass ¹ | pass ² | pass ³ |
+| **lib60870** | pass | pass ¹ ⁴ | pass ² | pass |
+| **openmuc** | pass ⁴ | pass ¹ ⁴ | pass ² ⁴ | pass ⁴ |
+| **wendy512** | pass ² | pass ¹ ² ⁴ | pass ² | pass ² |
+| **cbsigma** | pass | pass ¹ ⁴ | pass ² | pass ³ |
 
 ¹ without file transfer: the openmuc server does not serve files.
 ² without time-tagged commands and file transfer: see the
 [capabilities](CAPABILITIES.md#features) of wendy512.
 ³ and the cases of [tests/secure-cases.tsv](../tests/secure-cases.tsv): the
 security flags, which only cbsigma has.
+⁴ except read: a known bug of j60870 1.8.0 (see
+[the finding](#j60870-180-cannot-receive-a-read-command)).
 
 Verified on linux/arm64 with the pins above on 2026-10-26: 39 cases, the
 value checks and the session checks over 16 pairings, and the 10 secure
-cases for cbsigma against itself; 1223 checks passed, none failed, 88 were
-skipped for a capability that is not declared.
+cases for cbsigma against itself; 1172 checks passed, none failed, 23 were
+the known read bug of j60870 1.8.0 and 88 were skipped for a capability that
+is not declared.
 
 Covered by every pairing: STARTDT/STOPDT; general interrogation (station, broadcast address,
 unknown station, unsupported group); counter interrogation; read of a
-status, a measurement, a counter and an unknown address; clock
+status, a measurement, a counter and an unknown address (not with openmuc,
+see footnote 4); clock
 synchronization; test command; single, double, regulating step and the
 three set-point commands, with and without time tag, direct, select only,
 select-and-execute and cancelled; refusals for an unknown object, an object
@@ -133,9 +135,8 @@ Effect: a 1.8.0 server drops the connection on any read command, and a
 1.8.0 client drops it when a read is refused (the refusal is the mirrored
 C_RD_NA_1). 1.7.2 does not have the check and handles both.
 
-The adapter is therefore released on **1.7.2**; see
-[above](#why-j60870-is-one-release-behind) for what that costs (nothing) and
-how the latest release is tracked.
+The adapter is released on 1.8.0 with this bug listed as known; see
+[above](#j60870-180).
 
 ### Normalized values are scaled differently
 

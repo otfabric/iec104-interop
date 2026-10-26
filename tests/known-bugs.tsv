@@ -1,7 +1,8 @@
 # Known bugs of upstream versions, for scripts/interop.sh.
 #
-# A released pin has no entry here: an adapter is published on a version that
-# passes every case. Entries exist for versions that are built as candidates
+# Adapters are published on the latest upstream release even when it has a
+# bug; the bug is listed here (and in docs/COMPATIBILITY.md) instead of
+# pinning an older release. The same entries apply to candidate builds
 # (make candidate-openmuc), so that one upstream bug is reported as such
 # instead of hiding whether everything else works.
 #
@@ -13,6 +14,6 @@
 #
 # For a pairing that involves the adapter at that version, a matching case
 # may fail and is counted as "known bug" rather than as a failure. If no
-# matching case fails any more, the run fails: the entry is stale and the pin
-# can move.
+# matching case fails any more, the run fails: the entry is stale and must be
+# removed.
 openmuc	1.8.0	^read( |$)	j60870 1.8.0 cannot decode C_RD_NA_1 and closes the connection when it receives one

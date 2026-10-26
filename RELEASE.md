@@ -24,6 +24,30 @@ Tags are immutable. A fix is a new version.
 
 ---
 
+## v0.3.1
+
+**Date:** 2026-10-26
+
+## Summary
+
+The openmuc adapter on OpenMUC j60870 1.8.0, the latest release, with its
+read bug listed as a known upstream bug instead of a reason to stay a
+release behind.
+
+## Changes
+
+### Changed
+
+- **OpenMUC j60870 1.7.2 → 1.8.0.** 1.8.0 cannot decode a read command (C_RD_NA_1) and closes the connection on one: as a station on any read, as a controlling station when a read is refused. The bug is listed in `tests/known-bugs.tsv`, so the read cases of openmuc pairings count as known upstream bugs, and the self-test fails with "known bug did not reproduce" once a release fixes it. A fix is proposed upstream in [gythialy/j60870#75](https://github.com/gythialy/j60870/pull/75). 1.8.0 adds no protocol functionality a test can use. Details in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+- The rule for upstream pins is the latest release, also when it has a bug: the bug goes into `tests/known-bugs.tsv` ([CONTRIBUTING.md](CONTRIBUTING.md)).
+- `make interop`: 1172 checks passed, 23 known j60870 read bugs, 88 skipped for undeclared capabilities.
+
+### For consumers
+
+- A consumer that reads from the openmuc image has to expect the connection to close on a read command (openmuc as server) and on a refused read (openmuc as client). Everything else behaves as in v0.3.0.
+
+---
+
 ## v0.3.0
 
 **Date:** 2026-10-26

@@ -6,7 +6,7 @@ Test IEC 104 libraries against established implementations including MZ Automati
 | Adapter | Implementation | Language | Server | Client | Image |
 |---------|----------------|----------|:------:|:------:|-------|
 | `lib60870` | [MZ Automation lib60870-C](https://github.com/mz-automation/lib60870) v2.4.1 | C | yes | yes | `ghcr.io/otfabric/iec104-interop-lib60870` |
-| `openmuc` | [OpenMUC j60870](https://www.openmuc.org/iec-60870-5-104/) 1.7.2 | Java | yes | yes | `ghcr.io/otfabric/iec104-interop-openmuc` |
+| `openmuc` | [OpenMUC j60870](https://www.openmuc.org/iec-60870-5-104/) 1.8.0 | Java | yes | yes | `ghcr.io/otfabric/iec104-interop-openmuc` |
 | `wendy512` | [wendy512/iec104](https://github.com/wendy512/iec104) v1.0.4 on [go-iecp5](https://github.com/wendy512/go-iecp5) v1.2.6 | Go | yes | yes | `ghcr.io/otfabric/iec104-interop-wendy512` |
 | `cbsigma` | [cB-Sigma/iec60870](https://github.com/cB-Sigma/iec60870) v0.3.0 | Go | yes | yes | `ghcr.io/otfabric/iec104-interop-cbsigma` |
 

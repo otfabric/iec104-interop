@@ -43,7 +43,7 @@ This repository uses the GPL-3.0 release only.
 
 | Component | Version | Licence | Source |
 |-----------|---------|---------|--------|
-| j60870 (Fraunhofer ISE, OpenMUC) | 1.7.2 | GPL-3.0 | https://www.openmuc.org/iec-60870-5-104/ ; sources on Maven Central: `org.openmuc:j60870:1.7.2:sources` |
+| j60870 (Fraunhofer ISE, OpenMUC) | 1.8.0 | GPL-3.0 | https://www.openmuc.org/iec-60870-5-104/ ; sources on Maven Central: `org.openmuc:j60870:1.8.0:sources` |
 | Gson (Google) | 2.14.0 | Apache-2.0 | https://github.com/google/gson |
 | Adapter | this repository, `adapters/openmuc/` | GPL-3.0-or-later | https://github.com/otfabric/iec104-interop |
 | Eclipse Temurin JRE 25 and base system | Ubuntu noble | GPL-2.0 with Classpath Exception; various | https://adoptium.net |
