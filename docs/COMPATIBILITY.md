@@ -47,8 +47,9 @@ its release tags can be.
 adapter is on 1.8.0 anyway, with the bug listed in
 [tests/known-bugs.tsv](../tests/known-bugs.tsv): the read cases of the
 pairings with openmuc count as known bugs, and every other case must pass as
-it did on 1.7.2. Until v0.2.0 of this repository the adapter was pinned to
-1.7.2 for this bug.
+it did on 1.7.2. Until v0.3.0 of this repository the adapter was pinned to
+1.7.2 for this bug. A fix is proposed upstream in
+[gythialy/j60870#75](https://github.com/gythialy/j60870/pull/75).
 
 What 1.8.0 changes over 1.7.2, and whether a test could use it:
 

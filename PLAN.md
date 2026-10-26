@@ -33,7 +33,7 @@ Delivery in phases, each with an acceptance gate. Status as of 2026-10-26.
 - Java adapter on j60870 1.7.2, both roles, same operations
 - Cross-stack self-test over all four pairings: expected outcome per case, and identical result documents across pairings
 
-**Gate:** both stacks satisfy the baseline contract in every direction. Met (249 checks). Findings are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md), notably that j60870 1.8.0 cannot receive a read command. 1.7.2 was pinned for that until v0.3.0, which moved to 1.8.0 with the bug listed in `tests/known-bugs.tsv`.
+**Gate:** both stacks satisfy the baseline contract in every direction. Met (249 checks). Findings are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md), notably that j60870 1.8.0 cannot receive a read command. 1.7.2 was pinned for that until v0.3.0; v0.3.1 moved to 1.8.0 with the bug listed in `tests/known-bugs.tsv`.
 
 ## Phase 4 - First published images (done)
 
