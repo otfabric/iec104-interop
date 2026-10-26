@@ -41,4 +41,12 @@ if [[ "$(arg adapters/wendy512/Dockerfile GOIECP5_VERSION)" != "$(gomod go-iecp5
     echo "FAIL go-iecp5 version: Dockerfile and go.mod disagree"
     status=1
 fi
+cb=$(arg adapters/cbsigma/Dockerfile IEC60870_VERSION)
+need "cbsigma golang"    "$(arg adapters/cbsigma/Dockerfile GOLANG_DIGEST)"
+need "cbsigma debian"    "$(arg adapters/cbsigma/Dockerfile DEBIAN_DIGEST)"
+need "iec60870 version"  "version: \"${cb}\""
+if [[ "${cb}" != "$(sed -nE 's|^require github.com/cB-Sigma/iec60870 (v[^ ]+).*$|\1|p' adapters/cbsigma/go.mod)" ]]; then
+    echo "FAIL iec60870 version: Dockerfile and go.mod disagree"
+    status=1
+fi
 exit "${status}"

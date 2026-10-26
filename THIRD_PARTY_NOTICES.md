@@ -12,12 +12,15 @@ next to the licence texts.
 | `adapters/lib60870/` (links lib60870-C) | GPL-3.0-or-later |
 | `adapters/openmuc/` (links j60870) | GPL-3.0-or-later |
 | `adapters/wendy512/` (links wendy512/iec104 and go-iecp5) | GPL-3.0-or-later |
+| `adapters/cbsigma/` (links cB-Sigma/iec60870 and the modules it needs) | GPL-3.0-or-later |
 | The published images | GPL-3.0 (they contain the libraries below) |
 
 The lib60870 and openmuc adapter programs are derivative works of GPL-3.0
 libraries. The wendy512 adapter links an Apache-2.0 and an LGPL-3.0 library,
-both of which may be combined into a GPL-3.0 work, and is under the same
-licence as the other two so that one licence covers `adapters/`. All carry
+both of which may be combined into a GPL-3.0 work, and the cbsigma adapter
+Apache-2.0, BSD-3-Clause and ISC libraries, which may be as well; both are
+under the same licence as the other two so that one licence covers
+`adapters/`. All carry
 `SPDX-License-Identifier: GPL-3.0-or-later`. Nothing in this repository is
 linked into a consumer: a library that tests against the images talks to them
 over TCP and reads their output, and is not affected by their licence.
@@ -66,6 +69,26 @@ source and build instructions are in this repository, and
 `docker build -f adapters/wendy512/Dockerfile .` with another
 `GOIECP5_VERSION`, or with a `replace` directive in `go.mod`, does that.
 
+## Image `iec104-interop-cbsigma`
+
+| Component | Version | Licence | Source |
+|-----------|---------|---------|--------|
+| cB-Sigma/iec60870 | v0.3.0, commit `d0cad7ab6b8905d21dca12f4f7364e788c80ae17` | Apache-2.0 | https://github.com/cB-Sigma/iec60870 |
+| cB-Sigma/iotsec | v0.1.0 | Apache-2.0 | https://github.com/cB-Sigma/iotsec |
+| cB-Sigma/iotcrypto | v0.1.0 | Apache-2.0; its brainpool, ccm and bigmod packages BSD-3-Clause (see its `NOTICE`) | https://github.com/cB-Sigma/iotcrypto |
+| cloudflare/circl | v1.6.3 | BSD-3-Clause | https://github.com/cloudflare/circl |
+| decred secp256k1 (`github.com/decred/dcrd/dcrec/secp256k1/v4`) | v4.4.0 | ISC | https://github.com/decred/dcrd |
+| golang.org/x/crypto | v0.57.0 | BSD-3-Clause | https://go.googlesource.com/crypto |
+| Go standard library and runtime | 1.27.2 | BSD-3-Clause | https://go.dev |
+| Adapter | this repository, `adapters/cbsigma/` | GPL-3.0-or-later | https://github.com/otfabric/iec104-interop |
+| Base system | Debian trixie-slim | various; see `/usr/share/doc/*/copyright` in the image | https://www.debian.org |
+
+These are the modules linked into the adapter binary; `adapters/cbsigma/go.mod`
+lists more, which the build does not link. The build copies the licence and
+notice files of every linked module to `/licenses/<module path>/` (the
+Apache-2.0 modules have a `NOTICE` as well) and fails when a module has
+none; `/licenses/GPL-3.0.txt` is the adapter's.
+
 ## Corresponding source
 
 For every published image the complete corresponding source is:
@@ -75,7 +98,7 @@ For every published image the complete corresponding source is:
    (`adapterVersion`), which contains the adapter source and the build
    instructions (the Dockerfile); and
 2. the upstream sources at exactly the versions pinned by that Dockerfile,
-   `adapters/openmuc/pom.xml` and `adapters/wendy512/go.mod`, recorded in [versions.yaml](versions.yaml) and
+   `adapters/openmuc/pom.xml`, `adapters/wendy512/go.mod` and `adapters/cbsigma/go.mod`, recorded in [versions.yaml](versions.yaml) and
    in the `manifest.json` of the release.
 
 `docker build -f adapters/<adapter>/Dockerfile .` at the release tag

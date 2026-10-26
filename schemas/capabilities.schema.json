@@ -44,7 +44,7 @@
                    "testCommand", "directCommands", "selectBeforeOperate", "commandDeactivation",
                    "timeTaggedCommands", "spontaneousOnCommand", "apciParameters", "multipleConnections",
                    "pointQualityOnBitstring", "tls", "dataTransferEvents", "fileTransfer", "fileServer",
-                   "fileClient"],
+                   "fileClient", "secureAuthentication"],
       "additionalProperties": { "type": "boolean" }
     },
     "pointTypes": { "type": "array", "items": { "type": "string", "pattern": "^M_[A-Z]{2}_[A-Z]{2}_1$" } },

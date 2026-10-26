@@ -1,6 +1,6 @@
 # Plan
 
-Delivery in phases, each with an acceptance gate. Status as of 2026-10-09.
+Delivery in phases, each with an acceptance gate. Status as of 2026-10-26.
 
 | Phase | Scope | Status |
 |-------|-------|--------|
@@ -8,7 +8,7 @@ Delivery in phases, each with an acceptance gate. Status as of 2026-10-09.
 | 2 | lib60870 adapter, client and server | done |
 | 3 | OpenMUC adapter; cross-stack self-test | done |
 | 4 | First published images; consumption from go-iec104 | done: v0.1.0 |
-| 5 | wendy512, Eclipse OneOFour, Fraunhofer adapters | wendy512 done; the other two not started |
+| 5 | wendy512, cB-Sigma, Eclipse OneOFour, Fraunhofer adapters | wendy512 and cB-Sigma done; the other two not started |
 | 6 | Expanded coverage and hardening | partly: see below |
 | 7 | Release qualification | workflow written, not exercised |
 
@@ -42,7 +42,7 @@ Delivery in phases, each with an acceptance gate. Status as of 2026-10-09.
 
 **Gate:** go-iec104 runs its bidirectional tests against the published images without a checkout of this repository. Met.
 
-## Phase 5 - Additional adapters (wendy512 done)
+## Phase 5 - Additional adapters (wendy512 and cB-Sigma done)
 
 ### wendy512/iec104 (done)
 
@@ -52,6 +52,15 @@ Evaluation: both roles exist; the latest tags are v1.0.4 (Apache-2.0) and, for i
 - Not available in the upstream and declared so: time-tagged commands, file transfer, the STARTDT/STOPDT server events.
 
 **Gate:** smoke test and cross-stack self-test for the roles it declares. Met (29 smoke checks; 643 cross-stack checks over nine pairings, 62 skipped for undeclared capabilities). Findings are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+
+### cB-Sigma/iec60870 (done)
+
+Evaluation: both roles exist; the latest tag is v0.3.0 (Apache-2.0, with Apache-2.0, BSD-3-Clause and ISC dependencies, all of which may be combined into a GPL-3.0 work); written from the standards with no code from other projects, so a fourth independent implementation; pure Go. It is the only open-source implementation with the A-Profile of IEC 62351-5, which is why it was added before OneOFour.
+
+- Go adapter, both roles, every operation of contract 1.1, time-tagged commands, file transfer as station and as controlling station.
+- Contract 1.2: the security flags, the feature `secureAuthentication` and secure self-tests.
+
+**Gate:** smoke test and cross-stack self-test for the roles it declares, and the secure cases. Met (36 smoke checks; 1223 cross-stack checks over sixteen pairings, 88 skipped for undeclared capabilities). Findings are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
 ### Remaining
 
@@ -66,7 +75,7 @@ An adapter joins `ADAPTERS` in the Makefile and the CI matrix once it passes `ma
 
 ## Phase 6 - Expanded coverage (partly done)
 
-Done: the upstream candidates workflow (weekly probe of the latest lib60870, j60870 and wendy512/iec104 with go-iecp5, with a pin-vs-latest decision table); capability-aware self-tests (a case names the features it needs and is skipped for a pairing that lacks one); file transfer in monitor direction (contract 1.1: `files` in fixtures, the `file-get` operation, a file server in the lib60870 adapter); commands of six types with and without time tag, select-before-operate and deactivation, counter interrogation, clock synchronization, time-tagged reports on command, `k`/`w` at 1, the idle test, concurrent sessions.
+Done: the upstream candidates workflow (weekly probe of the latest lib60870, j60870, wendy512/iec104 with go-iecp5 and cB-Sigma/iec60870, with a pin-vs-latest decision table); IEC 62351-5 application-layer security (contract 1.2, one stack); capability-aware self-tests (a case names the features it needs and is skipped for a pairing that lacks one); file transfer in monitor direction (contract 1.1: `files` in fixtures, the `file-get` operation, a file server in the lib60870 adapter); commands of six types with and without time tag, select-before-operate and deactivation, counter interrogation, clock synchronization, time-tagged reports on command, `k`/`w` at 1, the idle test, concurrent sessions.
 
 Open, each as a fixture or operation that every published adapter can serve:
 
@@ -76,6 +85,7 @@ Open, each as a fixture or operation that every published adapter can serve:
 - Spontaneous data to all sessions, for redundancy scenarios
 - File transfer in control direction (upload), the directory, and a file server on a second stack
 - TLS, where at least two stacks support it
+- IEC 62351-5 on a second stack, so that the secure cases compare two implementations
 
 ## Phase 7 - Release qualification (open)
 

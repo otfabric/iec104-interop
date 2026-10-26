@@ -34,7 +34,7 @@ Adapter sources link GPL-3.0 libraries: keep the `SPDX-License-Identifier: GPL-3
 
 The rule is the latest upstream release. A newer release that fails the self-tests is not adopted as the pin, but it is not dropped either: list its bug in [tests/known-bugs.tsv](tests/known-bugs.tsv), build it as a candidate (`make candidate-openmuc` is the model) and record in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) what the older pin costs. When the candidate run reports that the known bug no longer reproduces, move the pin.
 
-The **Upstream candidates** workflow does this probe every week for every stack and summarizes it as a decision table; `make candidate-openmuc`, `make candidate-lib60870 LIB60870_CANDIDATE_SHA=<commit>` and `make candidate-wendy512` run the same thing locally.
+The **Upstream candidates** workflow does this probe every week for every stack and summarizes it as a decision table; `make candidate-openmuc`, `make candidate-lib60870 LIB60870_CANDIDATE_SHA=<commit>`, `make candidate-wendy512` and `make candidate-cbsigma` run the same thing locally.
 
 ## Registries and retries
 
@@ -48,7 +48,7 @@ Both architectures are built and self-tested natively, on an amd64 and an arm64 
 
 1. Specify it first: the operation, its flags, when it succeeds and its result fields in the contract; the station behaviour in [docs/FIXTURES.md](docs/FIXTURES.md).
 2. Implement it in every published adapter.
-3. Add cases to [tests/cases.tsv](tests/cases.tsv) with the expected outcome, and a value check in `scripts/interop.sh` if the outcome line cannot show what matters.
+3. Add cases to [tests/cases.tsv](tests/cases.tsv) (or, for the security flags, [tests/secure-cases.tsv](tests/secure-cases.tsv)) with the expected outcome, and a value check in `scripts/interop.sh` if the outcome line cannot show what matters.
 4. Add the feature to the capability documents and to [docs/CAPABILITIES.md](docs/CAPABILITIES.md) and [COVERAGE.md](COVERAGE.md).
 5. Extend the schemas in `schemas/` if documents gained fields.
 
@@ -63,10 +63,10 @@ See [docs/FIXTURES.md](docs/FIXTURES.md#adding-a-fixture).
 1. Evaluate the upstream: does it build from a pinned source on both architectures, which roles does it provide, what is its licence, and is its protocol engine its own? Write the answers into [PLAN.md](PLAN.md) before writing code.
 2. Create `adapters/<name>/` with a Dockerfile built from the repository root, following the existing ones: pinned build stage, minimal runtime stage, non-root user, `/fixtures`, `/licenses`, the readiness file, the health check, `ENTRYPOINT ["/usr/local/bin/iec104-interop"]`.
 3. Implement the contract. For a role the upstream does not support, the command exits 2 with a message and `roles` says `false`. What the upstream cannot do within a role is a feature declared `false`, and the cases that need it name it in their `needs` column: never fake a behaviour the library does not have.
-4. `scripts/smoke.sh <name>` must pass, then `scripts/interop.sh lib60870 openmuc wendy512 <name>`.
+4. `scripts/smoke.sh <name>` must pass, then `scripts/interop.sh lib60870 openmuc wendy512 cbsigma <name>`.
 5. Add it to `ADAPTERS` in the Makefile, to the workflows, `versions.yaml`, `scripts/check-versions.sh`, the notices and the documentation tables.
 
-Do not build a shared adapter framework. Three adapters in three languages share a contract, not code.
+Do not build a shared adapter framework. Four adapters in three languages share a contract, not code.
 
 ## Style
 

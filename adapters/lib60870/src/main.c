@@ -76,6 +76,7 @@ int printCapabilities(void)
     cJSON_AddTrueToObject(f, "fileTransfer");
     cJSON_AddTrueToObject(f, "fileServer");
     cJSON_AddTrueToObject(f, "fileClient");
+    cJSON_AddFalseToObject(f, "secureAuthentication");
 
     cJSON_AddItemToObject(c, "pointTypes", cJSON_CreateStringArray(pointTypes, 8));
     cJSON_AddItemToObject(c, "commandTypes", cJSON_CreateStringArray(commandTypes, 6));

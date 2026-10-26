@@ -17,6 +17,50 @@ Tags are immutable. A fix is a new version.
 
 ---
 
+## v0.3.0
+
+**Date:** 2026-10-26
+
+## Summary
+
+A fourth independent reference implementation, cB-Sigma/iec60870, and with
+it the first one with application-layer security: the A-Profile of
+IEC 62351-5 (IEC TS 60870-5-7). Container contract 1.2: additions only,
+documents keep `schemaVersion` `"1.0"`.
+
+## Changes
+
+### Added
+
+- **`cbsigma` adapter** — [cB-Sigma/iec60870](https://github.com/cB-Sigma/iec60870) v0.3.0, Go, client and server. Image `ghcr.io/otfabric/iec104-interop-cbsigma`. Every operation of contract 1.1, time-tagged commands, file transfer as station and as controlling station, the data-transfer events, and the security flags.
+- **Security flags** (contract 1.2), for images with the feature `secureAuthentication`: `--secure`, `--security-cert`, `--security-key`, `--security-trust` (CA certificates are authorities, other certificates pins of self-signed ones), `--association-id`; `--mal` and `--dpa` for the client, `--roles` for the server. The `ready` event says `secure`, the result document `secured`, and the error `security-failed` means no association. A mirror with cause 17 (not authorized) counts as a negative confirmation; with `--roles`, a request the roles do not permit is refused that way.
+- **Secure self-tests** — `tests/secure-cases.tsv` runs for every pairing that declares `secureAuthentication`, against key material made with openssl for the run (`make_identities` in `scripts/lib.sh`): authority and pinned certificates, HMAC-SHA-256 and AES-256-GCM, other association identities, a viewer refused with cause 17 and an operator executed, untrusted stations on either side, a client without security. The smoke test checks the usage errors of the flags on every image and the `ready` event of a secure server.
+- **Upstream candidates workflow** probes cB-Sigma/iec60870 as well; `make candidate-cbsigma` does it locally.
+- `compose.yaml` and `make run-cbsigma` serve the fourth station on 127.0.0.1:2407.
+
+### Changed
+
+- `secureAuthentication` is a required feature of the capability document; lib60870, openmuc and wendy512 declare it false.
+- The fixture rules say what a station does with a file deactivation (nothing) and leave the NOS of the last-section F_LS_NA_1 to the library; the agreement check no longer compares that field.
+- `make interop` covers sixteen pairings: 1223 checks, 88 skipped for undeclared capabilities.
+- The release `manifest.json` says `contract: "1.2"` and lists the fourth image and its upstream version.
+
+### Upstream notes
+
+- cB-Sigma/iec60870 v0.3.0 sends one less than lib60870 as the NOS of the last section, cuts segments of 200 octets unless told otherwise, deactivates a file after a refused selection, has no STOPDT notification, takes a timer of 0 for its default and asks for the file write permission for the acknowledgement of a download. Details in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+
+### For consumers
+
+- Nothing changes for a consumer of the three existing images unless it validates capability documents against a copy of the old schema.
+- A consumer that tests IEC 62351-5 mounts key material into the cbsigma image; see [README.md](README.md#using-the-images-from-a-librarys-tests) and the [security flags](docs/CONTAINER_CONTRACT.md#security-flags).
+
+### Not in this release
+
+- Eclipse OneOFour and Fraunhofer iec104-python adapters.
+- TLS (IEC 62351-3) flags.
+
+---
+
 ## v0.2.0
 
 **Date:** 2026-10-09

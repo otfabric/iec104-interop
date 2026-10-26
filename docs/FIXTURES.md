@@ -107,6 +107,11 @@ common address is `CA` or the broadcast address 65535. Answers always carry
 | Common address is neither `CA` nor 65535 | Mirror with cause 46 and P/N = 1 |
 | Type identification the station does not serve | Mirror with cause 44 and P/N = 1 |
 | Process command with a cause other than 6 or 8 | Mirror with cause 45 and P/N = 1 |
+| `server --secure --roles ...`: a request the roles do not permit | Mirror with cause 17 (not authorized) and P/N = 1 |
+
+The role check comes right after the type check, before the common address:
+which role permits what is IEC 62351-8's and the library's. Such a refusal,
+like the others in this table, produces no server event.
 
 What a station answers to a *system* command with an unexpected cause is left
 to the adapter's library and is not part of the fixture behaviour.
@@ -177,9 +182,13 @@ Only with the feature `fileServer`. The procedure is the one of
 | Request section (SCQ 6) | The section in F_SG_NA_1 segments, then F_LS_NA_1 with LSQ 3 and the checksum of the section |
 | Section acknowledged (AFQ 3) | F_SR_NA_1 for the next section, or after the last one F_LS_NA_1 with LSQ 1 and the checksum of the file |
 | File acknowledged (AFQ 1) | Nothing; the transfer is complete |
+| Deactivation (SCQ 3 or 7), of any file address and name | Nothing; a transfer of that file is abandoned |
 
 A file of `size` octets has `ceil(size / sectionSize)` sections, numbered
-from 1. A segment carries at most 236 octets, so that the ASDU fits an APDU
+from 1. The NOS of the last-section F_LS_NA_1 (LSQ 1) is left to the
+library: lib60870 sends one more than the number of sections,
+cB-Sigma/iec60870 the number of the last section. Clients accept either, and
+the self-tests do not compare that field. A segment carries at most 236 octets, so that the ASDU fits an APDU
 with three-octet addresses. A checksum is the sum of the octets modulo 256.
 
 A file is sent on the connection that selected it.

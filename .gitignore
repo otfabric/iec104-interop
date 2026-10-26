@@ -2,6 +2,7 @@
 adapters/lib60870/build/
 adapters/openmuc/target/
 adapters/wendy512/iec104-interop
+adapters/cbsigma/iec104-interop
 reports/
 
 # Editors and OS

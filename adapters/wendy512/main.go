@@ -123,6 +123,8 @@ func printCapabilities() int {
 			"fileTransfer": false,
 			"fileServer":   false,
 			"fileClient":   false,
+			// No IEC 62351-5.
+			"secureAuthentication": false,
 		},
 		"pointTypes": []string{"M_SP_NA_1", "M_DP_NA_1", "M_ST_NA_1", "M_BO_NA_1", "M_ME_NA_1", "M_ME_NB_1",
 			"M_ME_NC_1", "M_IT_NA_1"},

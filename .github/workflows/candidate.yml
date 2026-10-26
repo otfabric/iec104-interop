@@ -292,10 +292,76 @@ jobs:
           path: selftest.log
           if-no-files-found: ignore
 
+  candidate-cbsigma:
+    name: cbsigma
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      pin: ${{ steps.resolve.outputs.pin }}
+      latest: ${{ steps.resolve.outputs.latest }}
+      update: ${{ steps.resolve.outputs.update }}
+      test: ${{ steps.test.outcome }}
+      result: ${{ steps.test.outputs.result }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Resolve the cB-Sigma/iec60870 pin vs upstream
+        id: resolve
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          m = re.search(r"^ARG IEC60870_VERSION=(.+)$", Path("adapters/cbsigma/Dockerfile").read_text(), re.M)
+          if not m:
+              raise SystemExit("could not read ARG IEC60870_VERSION from the cbsigma Dockerfile")
+          pin = m.group(1).strip()
+
+          semver = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+          out = subprocess.check_output(["git", "ls-remote", "--tags", "https://github.com/cB-Sigma/iec60870.git"], text=True)
+          commits = {}
+          for line in out.splitlines():
+              sha, ref = line.split()
+              tag = ref.removeprefix("refs/tags/")
+              if tag.endswith("^{}"):
+                  commits[tag[:-3]] = sha
+              else:
+                  commits.setdefault(tag, sha)
+          tags = {t: c for t, c in commits.items() if semver.match(t)}
+          latest = max(tags, key=lambda t: tuple(int(x) for x in semver.match(t).groups()), default="")
+          # A newer tag on the same commit is the same code: not an update.
+          update = "yes" if latest and tags.get(pin) != tags.get(latest) else "no"
+
+          print(f"pin={pin}")
+          print(f"latest={latest}")
+          print(f"update={update}")
+          print(f"resolved iec60870 pin={pin} latest={latest}; update={update}", file=sys.stderr)
+          PY
+
+      - name: Build and self-test at the latest release
+        id: test
+        if: steps.resolve.outputs.update == 'yes'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          make candidate-cbsigma IEC60870_CANDIDATE="${{ steps.resolve.outputs.latest }}" 2>&1 | tee selftest.log
+          echo "result=$(grep -E '^\[interop\] [0-9]+ passed' selftest.log | tail -1 | sed 's/^\[interop\] //')" >> "$GITHUB_OUTPUT"
+
+      - name: Upload self-test log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: candidate-cbsigma
+          path: selftest.log
+          if-no-files-found: ignore
+
   summary:
     name: Decision table
     runs-on: ubuntu-latest
-    needs: [candidate-lib60870, candidate-j60870, candidate-wendy512]
+    needs: [candidate-lib60870, candidate-j60870, candidate-wendy512, candidate-cbsigma]
     if: always()
     steps:
       - name: Write pin-vs-latest summary
@@ -323,6 +389,11 @@ jobs:
           W_UPDATE: ${{ needs.candidate-wendy512.outputs.update }}
           W_TEST: ${{ needs.candidate-wendy512.outputs.test }}
           W_RESULT: ${{ needs.candidate-wendy512.outputs.result }}
+          C_PIN: ${{ needs.candidate-cbsigma.outputs.pin }}
+          C_LATEST: ${{ needs.candidate-cbsigma.outputs.latest }}
+          C_UPDATE: ${{ needs.candidate-cbsigma.outputs.update }}
+          C_TEST: ${{ needs.candidate-cbsigma.outputs.test }}
+          C_RESULT: ${{ needs.candidate-cbsigma.outputs.result }}
         run: |
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import os
@@ -345,6 +416,7 @@ jobs:
           j_pin, j_latest, j_update = env("J_PIN", "?"), env("J_LATEST", "?"), env("J_UPDATE", "?")
           j_known = env("J_KNOWN")
           w_update = env("W_UPDATE", "?")
+          c_update = env("C_UPDATE", "?")
 
           print("## Upstream candidate report")
           print()
@@ -375,6 +447,11 @@ jobs:
               f"| [wendy512/go-iecp5](https://github.com/wendy512/go-iecp5), its engine | Go module | "
               f"`{env('W_ENGINE_PIN', '?')}` | `{env('W_ENGINE_LATEST', '?')}` | tested with iec104 | |"
           )
+          print(
+              f"| [cB-Sigma/iec60870](https://github.com/cB-Sigma/iec60870) | Go module | "
+              f"`{env('C_PIN', '?')}` | `{env('C_LATEST', '?')}` | "
+              f"{tested(env('C_TEST'), env('C_RESULT'), c_update == 'no')} | **{c_update}** |"
+          )
           print()
           if j_known:
               print("### Known bugs of the latest release")
@@ -390,6 +467,8 @@ jobs:
           print("- lib60870: `adapters/lib60870/Dockerfile` (`LIB60870_VERSION`, `LIB60870_SHA`), mirrored in `versions.yaml`")
           print("- j60870: `adapters/openmuc/Dockerfile` (`J60870_VERSION`) and `adapters/openmuc/pom.xml`, mirrored in `versions.yaml`")
           print("- wendy512: `adapters/wendy512/Dockerfile` (`IEC104_VERSION`, `GOIECP5_VERSION`) and `adapters/wendy512/go.mod` "
+                "with `go.sum`, mirrored in `versions.yaml`")
+          print("- cbsigma: `adapters/cbsigma/Dockerfile` (`IEC60870_VERSION`) and `adapters/cbsigma/go.mod` "
                 "with `go.sum`, mirrored in `versions.yaml`")
           print()
           print("### How to read this")

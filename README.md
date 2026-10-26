@@ -1,16 +1,19 @@
 # iec104-interop — IEC 60870-5-104 (IEC 104) Interoperability Testing with Docker
 
 A Docker-based interoperability testing framework for IEC 60870-5-104 (IEC 104), providing independent SCADA client and server implementations, deterministic fixtures, and automated protocol compatibility testing.
-Test IEC 104 libraries against established implementations including MZ Automation lib60870 and OpenMUC j60870. Reference implementations are independently containerized, enabling reproducible testing across platforms without integrating third-party protocol stacks into production applications.
+Test IEC 104 libraries against established implementations including MZ Automation lib60870 and OpenMUC j60870, and IEC 62351-5 application-layer security against cB-Sigma/iec60870. Reference implementations are independently containerized, enabling reproducible testing across platforms without integrating third-party protocol stacks into production applications.
 
 | Adapter | Implementation | Language | Server | Client | Image |
 |---------|----------------|----------|:------:|:------:|-------|
 | `lib60870` | [MZ Automation lib60870-C](https://github.com/mz-automation/lib60870) v2.4.1 | C | yes | yes | `ghcr.io/otfabric/iec104-interop-lib60870` |
 | `openmuc` | [OpenMUC j60870](https://www.openmuc.org/iec-60870-5-104/) 1.7.2 | Java | yes | yes | `ghcr.io/otfabric/iec104-interop-openmuc` |
 | `wendy512` | [wendy512/iec104](https://github.com/wendy512/iec104) v1.0.4 on [go-iecp5](https://github.com/wendy512/go-iecp5) v1.2.6 | Go | yes | yes | `ghcr.io/otfabric/iec104-interop-wendy512` |
+| `cbsigma` | [cB-Sigma/iec60870](https://github.com/cB-Sigma/iec60870) v0.3.0 | Go | yes | yes | `ghcr.io/otfabric/iec104-interop-cbsigma` |
 
-The stacks do not all do the same: file transfer is served by lib60870 only,
-and wendy512 has no time-tagged commands. Each image says what it supports
+The stacks do not all do the same: file transfer is served by lib60870 and
+cbsigma, wendy512 has no time-tagged commands, and only cbsigma has the
+application-layer security of IEC 62351-5 (the A-Profile of
+IEC TS 60870-5-7), switched on with `--secure`. Each image says what it supports
 (`print-capabilities`); see [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
 
 Planned: Eclipse OneOFour (Java) and Fraunhofer iec104-python. See
@@ -119,6 +122,18 @@ docker run --rm --add-host=host.docker.internal:host-gateway \
   --host host.docker.internal --port <port of the library's server>
 ```
 
+**With IEC 62351-5 security** (images with the feature
+`secureAuthentication`): mount the key material, readable by uid 10001, and
+add the [security flags](docs/CONTAINER_CONTRACT.md#security-flags) to
+either command:
+
+```sh
+docker run -d --name ref -p 127.0.0.1:2404:2404 -v "$PWD/secrets:/secrets:ro" \
+  ghcr.io/otfabric/iec104-interop-cbsigma:<tag> server --secure \
+  --security-cert /secrets/station.pem --security-key /secrets/station.key \
+  --security-trust /secrets/ca.pem --roles viewer,operator
+```
+
 **Expected values** come from the image: `print-fixture baseline` prints the
 fixture it was built with, so expectations cannot drift from the image.
 
@@ -136,12 +151,14 @@ iec104-interop/
 ├── adapters/
 │   ├── lib60870/        C adapter: Dockerfile, CMakeLists.txt, src/
 │   ├── openmuc/         Java adapter: Dockerfile, pom.xml, src/
-│   └── wendy512/        Go adapter: Dockerfile, go.mod, *.go
+│   ├── wendy512/        Go adapter: Dockerfile, go.mod, *.go
+│   └── cbsigma/         Go adapter: Dockerfile, go.mod, *.go
 ├── fixtures/
 │   ├── schema/          JSON Schema of the fixture format
 │   └── baseline/        the baseline station
 ├── schemas/             JSON Schemas of the capability and client result documents
 ├── tests/cases.tsv      self-test cases: operation, expected outcome, features needed
+├── tests/secure-cases.tsv  self-test cases of the security flags
 ├── tests/known-bugs.tsv bugs of upstream versions that are built as candidates
 ├── scripts/             validate, smoke, cross-stack self-test
 ├── docs/                contract, fixtures, capabilities, compatibility
@@ -161,7 +178,7 @@ make candidate-openmuc   # self-test the adapter on the latest j60870 instead of
 ```
 
 The **Upstream candidates** workflow runs that probe weekly for lib60870,
-j60870 and wendy512/iec104 with go-iecp5 and reports pin versus latest in
+j60870, wendy512/iec104 with go-iecp5 and cB-Sigma/iec60870 and reports pin versus latest in
 its job summary.
 
 `make smoke ADAPTERS=lib60870` and `VERBOSE=1 make interop` narrow and
@@ -171,7 +188,8 @@ adding an adapter, a fixture or a client operation.
 ## Security
 
 The servers are unauthenticated IEC 60870-5-104 stations that accept
-commands from anyone who can reach them. They are test fixtures:
+commands from anyone who can reach them (cbsigma with `--secure` excepted,
+with test key material). They are test fixtures:
 `compose.yaml` and the `run-*` targets publish them on loopback only, and
 they must never be attached to a plant network. See [SECURITY.md](SECURITY.md).
 
@@ -179,6 +197,7 @@ they must never be attached to a plant network. See [SECURITY.md](SECURITY.md).
 
 The repository's own code and documentation are MIT-licensed, except the
 adapter sources under `adapters/`, which are GPL-3.0-or-later: two of them
-link GPL-3.0 libraries, the third an Apache-2.0 and an LGPL-3.0 one. The
+link GPL-3.0 libraries, the third an Apache-2.0 and an LGPL-3.0 one, the
+fourth Apache-2.0, BSD-3-Clause and ISC ones. The
 images contain those libraries and are distributed under GPL-3.0. See [LICENSE](LICENSE) and
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

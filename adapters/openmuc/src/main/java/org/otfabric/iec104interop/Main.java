@@ -145,6 +145,7 @@ public final class Main {
         f.addProperty("fileTransfer", true);
         f.addProperty("fileServer", false);
         f.addProperty("fileClient", true);
+        f.addProperty("secureAuthentication", false);
         c.add("features", f);
 
         c.add("pointTypes", strings("M_SP_NA_1", "M_DP_NA_1", "M_ST_NA_1", "M_BO_NA_1", "M_ME_NA_1", "M_ME_NB_1",

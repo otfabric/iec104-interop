@@ -18,6 +18,7 @@ self-tested as a candidate.
 | `openmuc` | [OpenMUC j60870](https://www.openmuc.org/iec-60870-5-104/) | 1.7.2 | 1.8.0 | Maven Central `org.openmuc:j60870:1.7.2` | independent, Java |
 | `wendy512` | [wendy512/iec104](https://github.com/wendy512/iec104) | v1.0.4 | v1.0.4 | Go module `github.com/wendy512/iec104@v1.0.4` (commit `8fb65c83865c94cf37a89d12c9c42dd8c1807cc4`), checksum in `go.sum` | independent, Go |
 | | its engine [wendy512/go-iecp5](https://github.com/wendy512/go-iecp5) | v1.2.6 | v1.2.6 | Go module `github.com/wendy512/go-iecp5@v1.2.6` (commit `2269ee79a5e137847bbdc811be71a1064d303560`), checksum in `go.sum` | |
+| `cbsigma` | [cB-Sigma/iec60870](https://github.com/cB-Sigma/iec60870) | v0.3.0 | v0.3.0 | Go module `github.com/cB-Sigma/iec60870@v0.3.0` (commit `d0cad7ab6b8905d21dca12f4f7364e788c80ae17`), checksum in `go.sum` | independent, Go |
 
 Everything else is on its latest release as of 2026-10-09: Debian 13
 (trixie), Eclipse Temurin 25, Maven 3.9, Gson 2.14.0, Go 1.27.2.
@@ -26,8 +27,8 @@ wendy512/iec104 v1.0.4 asks for go-iecp5 v1.2.5; v1.2.6 is a later tag on
 the same commit, so the adapter builds on the latest tag without a change in
 code.
 
-The pins live in the Dockerfiles, `adapters/openmuc/pom.xml` and
-`adapters/wendy512/go.mod` and are mirrored in
+The pins live in the Dockerfiles, `adapters/openmuc/pom.xml`,
+`adapters/wendy512/go.mod` and `adapters/cbsigma/go.mod` and are mirrored in
 [versions.yaml](../versions.yaml); `scripts/check-versions.sh` keeps them in
 step. The **Upstream candidates** workflow
 (`.github/workflows/candidate.yml`, weekly and on demand) resolves the latest
@@ -73,24 +74,28 @@ signal.
 ## Cross-stack matrix
 
 `make interop` runs every case of [tests/cases.tsv](../tests/cases.tsv) in
-all nine pairings and requires, besides the expected outcome, that the
+all sixteen pairings and requires, besides the expected outcome, that the
 result documents of all pairings are identical apart from time tags. A case
 that needs a feature a pairing does not declare is skipped for that pairing
 and counted as such.
 
-| Client → Server | lib60870 | openmuc | wendy512 |
-|-----------------|:--------:|:-------:|:--------:|
-| **lib60870** | pass | pass ¹ | pass ² |
-| **openmuc** | pass | pass ¹ | pass ² |
-| **wendy512** | pass ² | pass ¹ ² | pass ² |
+| Client → Server | lib60870 | openmuc | wendy512 | cbsigma |
+|-----------------|:--------:|:-------:|:--------:|:-------:|
+| **lib60870** | pass | pass ¹ | pass ² | pass |
+| **openmuc** | pass | pass ¹ | pass ² | pass |
+| **wendy512** | pass ² | pass ¹ ² | pass ² | pass ² |
+| **cbsigma** | pass | pass ¹ | pass ² | pass ³ |
 
 ¹ without file transfer: the openmuc server does not serve files.
 ² without time-tagged commands and file transfer: see the
 [capabilities](CAPABILITIES.md#features) of wendy512.
+³ and the cases of [tests/secure-cases.tsv](../tests/secure-cases.tsv): the
+security flags, which only cbsigma has.
 
-Verified on linux/arm64 with the pins above on 2026-10-09: 39 cases, the
-value checks and the session checks over 9 pairings; 643 checks passed, none
-failed, 62 were skipped for a capability that is not declared.
+Verified on linux/arm64 with the pins above on 2026-10-26: 39 cases, the
+value checks and the session checks over 16 pairings, and the 10 secure
+cases for cbsigma against itself; 1223 checks passed, none failed, 88 were
+skipped for a capability that is not declared.
 
 Covered by every pairing: STARTDT/STOPDT; general interrogation (station, broadcast address,
 unknown station, unsupported group); counter interrogation; read of a
@@ -263,6 +268,44 @@ drives go-iecp5's `cs104.Client`, the same engine, directly.
 The server does not report whether it could listen, and go-iecp5's client
 does not report a failed dial, other than through the log; the adapter
 watches the library log for those two messages.
+
+### cB-Sigma/iec60870 and the other stacks
+
+What the cbsigma adapter met, and how it deals with it:
+
+- **The NOS of the last section differs.** At the end of a file
+  (F_LS_NA_1, LSQ 1) lib60870 sends one more than the number of sections,
+  cB-Sigma the number of the last section. Every client accepts both. The
+  standard's text is not available to this project, so neither is called
+  wrong: [FIXTURES.md](FIXTURES.md) leaves the field to the library and the
+  agreement check of the self-tests does not compare it.
+- **Segments of 200 octets.** cB-Sigma's file server cuts sections into
+  segments of 200 octets by default; the fixture format says 236, which the
+  adapter sets.
+- **Deactivation after a refusal.** cB-Sigma's client sends a file
+  deactivation (F_SC_NA_1, SCQ 3) after any failed download, a refused
+  selection included. The station answers a deactivation with nothing,
+  whatever file it names; when the adapter answered one for an unknown file
+  with a refusal, whether the client saw it depended on timing.
+- **No STOPDT notification.** The library calls back when STARTDT is
+  confirmed but not when STOPDT is; the adapter watches the link's state
+  every 2 ms to emit `data-transfer-stopped`.
+- **Timers of 0 are defaults.** A timer of 0 in `cs104.LinkConfig` means
+  "use the default", so the idle test cannot be switched off: `--t3 0` is a
+  usage error.
+- **Normalized values** are carried as `raw / 32768`, as the contract's
+  `normalized` field is.
+- **Pins are for self-signed certificates.** A pinned certificate is
+  accepted only when it is self-signed; a certificate an authority signed is
+  checked against the authorities, pinned or not. A certificate with
+  CA:TRUE in `--security-trust` is an authority, so a pin must not be a CA
+  certificate (openssl's `req -x509` makes one unless told otherwise).
+- **A secure station drops what is not secured.** With `--secure` a client
+  without security gets its STARTDT confirmed and then no answer at all.
+- Read from the source, not asserted by a test: cB-Sigma maps F_AF_NA_1,
+  the acknowledgement of a download, to the FileWrite permission, so with
+  `--roles viewer` a download is likely refused at its end. The secure
+  cases do not download files.
 
 ## Platforms
 

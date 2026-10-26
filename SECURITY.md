@@ -8,7 +8,7 @@ If you discover a security vulnerability in `iec104-interop`, please report it r
 
 Instead, please email **security@otfabric.io**, or open a private advisory on GitHub (the [Security](https://github.com/otfabric/iec104-interop/security) tab → **Advisories** → **Report a vulnerability**), with a description, steps to reproduce and the affected image tag or digest.
 
-Vulnerabilities in the bundled implementations themselves (lib60870-C, j60870, wendy512/iec104, go-iecp5) belong upstream; report them there, and tell us so that the pin can be moved.
+Vulnerabilities in the bundled implementations themselves (lib60870-C, j60870, wendy512/iec104, go-iecp5, cB-Sigma/iec60870 and its modules) belong upstream; report them there, and tell us so that the pin can be moved.
 
 ## Supported Versions
 
@@ -26,7 +26,8 @@ The images run **unauthenticated, unencrypted IEC 60870-5-104 stations** that ac
 - **Never attach a server to a plant, control or other production network**
 - **Never point a client at a real station**: `command`, `clock-sync` and the other operations act on what they are sent to
 - `compose.yaml` and the `run-*` Makefile targets publish ports on `127.0.0.1` only. Keep it that way; the self-tests use private Docker networks and publish nothing
-- There is no TLS and no access control, and none is planned beyond what a future fixture needs to test a consumer's TLS support
+- There is no TLS, and none is planned beyond what a future fixture needs to test a consumer's TLS support
+- The cbsigma image has IEC 62351-5 application-layer security (`--secure`) so that a consumer can test its own. The self-tests make throw-away key material with openssl, valid for two days; never mount real station keys into an image
 
 ### Image hardening
 
@@ -37,6 +38,6 @@ The images run **unauthenticated, unencrypted IEC 60870-5-104 stations** that ac
 
 ### Supply chain
 
-- Upstream sources are fetched during the image build from GitHub (lib60870), Maven Central (j60870, Gson) and the Go module proxy (wendy512/iec104, go-iecp5) at pinned versions; the lib60870 checkout is verified against the pinned commit hash and the Go modules against the checksums in `go.sum`
+- Upstream sources are fetched during the image build from GitHub (lib60870), Maven Central (j60870, Gson) and the Go module proxy (wendy512/iec104, go-iecp5, cB-Sigma/iec60870 and the modules it needs) at pinned versions; the lib60870 checkout is verified against the pinned commit hash and the Go modules against the checksums in `go.sum`
 - Base images are pinned by digest. CI and the release workflow pull them from `mirror.gcr.io/library`, a mirror of Docker Hub's official images, because anonymous Docker Hub pulls are rate limited; the digest makes the source irrelevant to the content (`BASE_REGISTRY`, default `docker.io/library`). The build tooling images (BuildKit, QEMU handlers, shellcheck) come from the same mirror by tag (`TOOLS_REGISTRY`)
 - Consumers should pin images by digest, taken from the `manifest.json` of a release

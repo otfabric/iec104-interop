@@ -3,8 +3,8 @@
 # The Dockerfiles and adapters/openmuc/pom.xml are the source of truth for a
 # build: scripts/check-versions.sh fails when this file disagrees with them.
 
-interop_version: "0.2.0"
-contract_version: "1.1"        # docs/CONTAINER_CONTRACT.md, schemaVersion of every document
+interop_version: "0.3.0"
+contract_version: "1.2"        # docs/CONTAINER_CONTRACT.md, schemaVersion of every document
 fixture_schema: "1.0"          # fixtures/schema/iec104-fixture.schema.json
 
 protocol:
@@ -66,6 +66,25 @@ implementations:
       revision: "2269ee79a5e137847bbdc811be71a1064d303560"
       license: "LGPL-3.0"
 
+  cbsigma:
+    priority: P1
+    status: published
+    upstream: "cB-Sigma/iec60870"
+    repository: "https://github.com/cB-Sigma/iec60870"
+    module: "github.com/cB-Sigma/iec60870"
+    version: "v0.3.0"            # latest release
+    revision: "d0cad7ab6b8905d21dca12f4f7364e788c80ae17"
+    license: "Apache-2.0"
+    language: "Go"
+    independent_engine: true
+    roles: [server, client]
+    note: >-
+      The only adapter with the A-Profile of IEC 62351-5 (the security flags
+      of the contract). Its own modules cB-Sigma/iotsec and cB-Sigma/iotcrypto
+      are Apache-2.0; golang.org/x/crypto and cloudflare/circl BSD-3-Clause;
+      decred secp256k1 ISC. The versions of every module are in
+      adapters/cbsigma/go.mod.
+
   oneofour:
     priority: P1
     status: planned
@@ -99,6 +118,7 @@ images:
   lib60870: "ghcr.io/otfabric/iec104-interop-lib60870"
   openmuc: "ghcr.io/otfabric/iec104-interop-openmuc"
   wendy512: "ghcr.io/otfabric/iec104-interop-wendy512"
+  cbsigma: "ghcr.io/otfabric/iec104-interop-cbsigma"
 
 platforms:
   - "linux/amd64"

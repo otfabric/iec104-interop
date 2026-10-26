@@ -37,13 +37,14 @@ framework.
 
 ## R2 - Reference implementations
 
-- R2.1 Exactly these five are in scope, in this order of priority:
+- R2.1 Exactly these six are in scope, in this order of priority:
 
   | Priority | Implementation | Language | Independent engine |
   |----------|----------------|----------|:------------------:|
   | P0 | MZ Automation lib60870 | C | yes |
   | P0 | OpenMUC j60870 | Java | yes |
   | P1 | wendy512/iec104 | Go | yes |
+  | P1 | cB-Sigma/iec60870 | Go | yes |
   | P1 | Eclipse OneOFour | Java | yes |
   | P2 | Fraunhofer iec104-python | Python / C++ | no: wraps lib60870 |
 
