@@ -32,7 +32,7 @@ Adapter sources link GPL-3.0 libraries: keep the `SPDX-License-Identifier: GPL-3
 2. `make ci`.
 3. Record the new version, and anything it changed, in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [RELEASE.md](RELEASE.md).
 
-The rule is the latest upstream release. A newer release that fails the self-tests is not adopted as the pin, but it is not dropped either: list its bug in [tests/known-bugs.tsv](tests/known-bugs.tsv), build it as a candidate (`make candidate-openmuc` is the model) and record in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) what the older pin costs. When the candidate run reports that the known bug no longer reproduces, move the pin.
+The rule is the latest upstream release, also when it has a bug: list the bug in [tests/known-bugs.tsv](tests/known-bugs.tsv) (the matching cases then count as known bugs, not failures) and describe it in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md), rather than pinning an older release. Stay behind only when the bug costs the coverage of a whole stack, and then build the latest release as a candidate (`make candidate-openmuc` is the model). When a run reports that a known bug no longer reproduces, remove its entry.
 
 The **Upstream candidates** workflow does this probe every week for every stack and summarizes it as a decision table; `make candidate-openmuc`, `make candidate-lib60870 LIB60870_CANDIDATE_SHA=<commit>`, `make candidate-wendy512` and `make candidate-cbsigma` run the same thing locally.
 

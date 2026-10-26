@@ -49,7 +49,9 @@ documents keep `schemaVersion` `"1.0"`.
 
 - `secureAuthentication` is a required feature of the capability document; lib60870, openmuc and wendy512 declare it false.
 - The fixture rules say what a station does with a file deactivation (nothing) and leave the NOS of the last-section F_LS_NA_1 to the library; the agreement check no longer compares that field.
-- `make interop` covers sixteen pairings: 1223 checks, 88 skipped for undeclared capabilities.
+- **OpenMUC j60870 1.7.2 → 1.8.0**, the latest release. 1.8.0 cannot decode a read command (C_RD_NA_1) and closes the connection on one; instead of staying a release behind for that, the bug is listed in `tests/known-bugs.tsv`, so the read cases of openmuc pairings count as known upstream bugs. 1.8.0 adds no protocol functionality a test can use. Details in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+- The rule for upstream pins is the latest release, also when it has a bug: the bug goes into `tests/known-bugs.tsv` ([CONTRIBUTING.md](CONTRIBUTING.md)).
+- `make interop` covers sixteen pairings: 1172 checks passed, 23 known j60870 read bugs, 88 skipped for undeclared capabilities.
 - The release `manifest.json` says `contract: "1.2"` and lists the fourth image and its upstream version.
 - **Release notes come from RELEASE.md**, as in every otfabric repository: the section of the tag, up to its `---` line, is the body of the GitHub release (followed by the image digests), and the release is titled `iec104-interop vX.Y.Z`. `scripts/release-notes.sh` extracts it; `make validate`, CI and the release workflow fail when the notes of the version are missing.
 
@@ -59,7 +61,7 @@ documents keep `schemaVersion` `"1.0"`.
 
 ### For consumers
 
-- Nothing changes for a consumer of the three existing images unless it validates capability documents against a copy of the old schema.
+- Nothing changes for a consumer of the three existing images unless it validates capability documents against a copy of the old schema, or reads from the openmuc image: its j60870 1.8.0 closes the connection on a read command (as a server) and on a refused read (as a client).
 - A consumer that tests IEC 62351-5 mounts key material into the cbsigma image; see [README.md](README.md#using-the-images-from-a-librarys-tests) and the [security flags](docs/CONTAINER_CONTRACT.md#security-flags).
 
 ### Not in this release

@@ -459,8 +459,7 @@ jobs:
               print(f"- j60870 `{j_latest}`: {j_known}")
               print()
               print("A candidate self-test that is `success` with *known upstream bugs* in its result "
-                    "means everything else passes on that version. See docs/COMPATIBILITY.md for why "
-                    "the pin stays behind.")
+                    "means everything else passes on that version. See docs/COMPATIBILITY.md.")
               print()
           print("### Pin locations")
           print()
@@ -478,7 +477,7 @@ jobs:
                 "cross-stack self-test against the pinned other stacks. `success`: the pin can move. "
                 "`failure`: read the uploaded log before bumping.")
           print("- A `failure` saying *known bug ... did not reproduce* is good news: the upstream bug is fixed. "
-                "Remove the entry from `tests/known-bugs.tsv` and move the pin.")
+                "Remove the entry from `tests/known-bugs.tsv` (and move the pin if it is behind).")
           print("- Bump deliberately, after reading the upstream changelog, and record the change in "
                 "`docs/COMPATIBILITY.md` and `RELEASE.md`.")
           PY

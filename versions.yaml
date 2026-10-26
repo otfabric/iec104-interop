@@ -30,18 +30,18 @@ implementations:
     upstream: "OpenMUC j60870"
     repository: "https://www.openmuc.org/iec-60870-5-104/"
     artifact: "org.openmuc:j60870"
-    version: "1.7.2"
+    version: "1.8.0"
     license: "GPL-3.0"
     language: "Java"
     independent_engine: true
     roles: [server, client]
     latest: "1.8.0"
     note: >-
-      Deliberately one release behind. 1.8.0 (2026-07-17) cannot decode
-      C_RD_NA_1 and closes the connection when it receives one; it adds no
-      protocol functionality over 1.7.2. It is built and self-tested as a
-      candidate (make candidate-openmuc) with that bug listed in
-      tests/known-bugs.tsv. See docs/COMPATIBILITY.md.
+      1.8.0 (2026-07-17) cannot decode C_RD_NA_1 and closes the connection
+      when it receives one. The bug is listed in tests/known-bugs.tsv, so the
+      read cases of openmuc pairings count as known bugs; when a release
+      fixes it, the self-test fails with "known bug did not reproduce". See
+      docs/COMPATIBILITY.md.
 
   wendy512:
     priority: P1
