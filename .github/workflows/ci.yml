@@ -38,6 +38,8 @@ jobs:
       - run: pip install jsonschema
       - name: versions.yaml matches the build files
         run: scripts/check-versions.sh
+      - name: RELEASE.md has the notes of interop_version
+        run: scripts/release-notes.sh > /dev/null
       - name: Fixtures
         run: python3 scripts/validate-fixtures.py --require-schema
       - name: Shellcheck

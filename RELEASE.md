@@ -2,10 +2,17 @@
 
 ## How a release is made
 
-1. `make ci` on the commit to release.
-2. Update `interop_version` in `versions.yaml` and the notes below.
-3. Tag `vX.Y.Z` and push the tag. The release workflow runs one job on an amd64 runner and one on an arm64 runner: each validates, builds every image natively with `ADAPTER_VERSION` set to the tag, runs the smoke and cross-stack self-tests on those images and pushes exactly them to GHCR as `<image>:vX.Y.Z-amd64` and `-arm64`. A last job joins the two into the multi-arch `<image>:vX.Y.Z` and creates the GitHub release with `manifest.json` (upstream pins and the digests of the multi-arch images) and `checksums.txt`.
+1. Write the notes of the version below and set `interop_version` in `versions.yaml` to it, in the same change. `make validate` (and CI) fails when RELEASE.md has no notes for `interop_version`.
+2. `make ci` on the commit to release.
+3. Tag `vX.Y.Z` and push the tag. The release workflow runs one job on an amd64 runner and one on an arm64 runner: each validates (including the notes of the tag), builds every image natively with `ADAPTER_VERSION` set to the tag, runs the smoke and cross-stack self-tests on those images and pushes exactly them to GHCR as `<image>:vX.Y.Z-amd64` and `-arm64`. A last job joins the two into the multi-arch `<image>:vX.Y.Z` and creates the GitHub release with `manifest.json` (upstream pins and the digests of the multi-arch images) and `checksums.txt`.
 4. Consumers pin the digests from `manifest.json`.
+
+The notes are the body of the GitHub release, followed by the image digests:
+everything after the heading `## vX.Y.Z` up to the next line that is exactly
+`---` (`scripts/release-notes.sh vX.Y.Z` prints it). This is the format of
+every otfabric repository and the rule of the shared release workflow, so:
+one section per version, newest first, each ending with a `---` line, and no
+`---` line inside a section.
 
 Tags are immutable. A fix is a new version.
 
@@ -44,6 +51,7 @@ documents keep `schemaVersion` `"1.0"`.
 - The fixture rules say what a station does with a file deactivation (nothing) and leave the NOS of the last-section F_LS_NA_1 to the library; the agreement check no longer compares that field.
 - `make interop` covers sixteen pairings: 1223 checks, 88 skipped for undeclared capabilities.
 - The release `manifest.json` says `contract: "1.2"` and lists the fourth image and its upstream version.
+- **Release notes come from RELEASE.md**, as in every otfabric repository: the section of the tag, up to its `---` line, is the body of the GitHub release (followed by the image digests), and the release is titled `iec104-interop vX.Y.Z`. `scripts/release-notes.sh` extracts it; `make validate`, CI and the release workflow fail when the notes of the version are missing.
 
 ### Upstream notes
 
@@ -139,3 +147,5 @@ server, behind container contract 1.0.
 
 - wendy512/iec104, Eclipse OneOFour and Fraunhofer iec104-python adapters.
 - TLS, file transfer, interrogation groups, redundancy.
+
+---
