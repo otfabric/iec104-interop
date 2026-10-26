@@ -35,3 +35,9 @@ services:
     image: ghcr.io/otfabric/iec104-interop-wendy512:${IEC104_INTEROP_VERSION:-dev}
     ports:
       - "127.0.0.1:2406:2404"
+
+  cbsigma:
+    <<: *server
+    image: ghcr.io/otfabric/iec104-interop-cbsigma:${IEC104_INTEROP_VERSION:-dev}
+    ports:
+      - "127.0.0.1:2407:2404"

@@ -49,6 +49,8 @@ jobs:
           python3 scripts/validate-fixtures.py --require-schema
           want="interop_version: \"${VERSION#v}\""
           grep -qF "$want" versions.yaml || { echo "::error::versions.yaml does not say $want"; exit 1; }
+          # The notes of this version become the body of the GitHub release.
+          scripts/release-notes.sh "${VERSION}" > /dev/null || { echo "::error::RELEASE.md has no notes for ${VERSION}"; exit 1; }
 
       - name: Build for linux/${{ matrix.arch }} and self-test
         run: |
@@ -111,51 +113,73 @@ jobs:
             --arg j60870 "$(arg adapters/openmuc/Dockerfile J60870_VERSION)" \
             --arg iec104 "$(arg adapters/wendy512/Dockerfile IEC104_VERSION)" \
             --arg goiecp5 "$(arg adapters/wendy512/Dockerfile GOIECP5_VERSION)" \
+            --arg iec60870 "$(arg adapters/cbsigma/Dockerfile IEC60870_VERSION)" \
             --arg lib_digest "${{ steps.digests.outputs.lib60870 }}" \
             --arg openmuc_digest "${{ steps.digests.outputs.openmuc }}" \
             --arg wendy512_digest "${{ steps.digests.outputs.wendy512 }}" \
+            --arg cbsigma_digest "${{ steps.digests.outputs.cbsigma }}" \
             '{
               version: $version,
               commit: $commit,
-              contract: "1.1",
+              contract: "1.2",
               fixtureSchema: "1.0",
               platforms: ["linux/amd64", "linux/arm64"],
               upstream: {
                 lib60870: { version: $lib_version, revision: $lib_sha },
                 j60870: { version: $j60870 },
                 "wendy512/iec104": { version: $iec104 },
-                "wendy512/go-iecp5": { version: $goiecp5 }
+                "wendy512/go-iecp5": { version: $goiecp5 },
+                "cB-Sigma/iec60870": { version: $iec60870 }
               },
               images: {
                 lib60870: ("ghcr.io/otfabric/iec104-interop-lib60870@" + $lib_digest),
                 openmuc: ("ghcr.io/otfabric/iec104-interop-openmuc@" + $openmuc_digest),
-                wendy512: ("ghcr.io/otfabric/iec104-interop-wendy512@" + $wendy512_digest)
+                wendy512: ("ghcr.io/otfabric/iec104-interop-wendy512@" + $wendy512_digest),
+                cbsigma: ("ghcr.io/otfabric/iec104-interop-cbsigma@" + $cbsigma_digest)
               }
             }' > manifest.json
           cat manifest.json
           sha256sum manifest.json > checksums.txt
 
+      # The body is the section of this version in RELEASE.md (up to its
+      # "---", as in every otfabric repository), followed by the images.
+      - name: Write the release body
+        env:
+          LIB60870: ${{ steps.digests.outputs.lib60870 }}
+          OPENMUC: ${{ steps.digests.outputs.openmuc }}
+          WENDY512: ${{ steps.digests.outputs.wendy512 }}
+          CBSIGMA: ${{ steps.digests.outputs.cbsigma }}
+        run: |
+          {
+            scripts/release-notes.sh "${VERSION}"
+            echo
+            echo "## Images"
+            echo
+            echo "| Image | Digest |"
+            echo "|-------|--------|"
+            echo "| \`${REGISTRY}/iec104-interop-lib60870:${VERSION}\` | \`${LIB60870}\` |"
+            echo "| \`${REGISTRY}/iec104-interop-openmuc:${VERSION}\` | \`${OPENMUC}\` |"
+            echo "| \`${REGISTRY}/iec104-interop-wendy512:${VERSION}\` | \`${WENDY512}\` |"
+            echo "| \`${REGISTRY}/iec104-interop-cbsigma:${VERSION}\` | \`${CBSIGMA}\` |"
+            echo
+            echo "## Pinning in a consumer"
+            echo
+            echo '```bash'
+            echo "IEC104_INTEROP_LIB60870_IMAGE=${REGISTRY}/iec104-interop-lib60870@${LIB60870}"
+            echo "IEC104_INTEROP_OPENMUC_IMAGE=${REGISTRY}/iec104-interop-openmuc@${OPENMUC}"
+            echo "IEC104_INTEROP_WENDY512_IMAGE=${REGISTRY}/iec104-interop-wendy512@${WENDY512}"
+            echo "IEC104_INTEROP_CBSIGMA_IMAGE=${REGISTRY}/iec104-interop-cbsigma@${CBSIGMA}"
+            echo '```'
+            echo
+            echo "\`manifest.json\` records the upstream revisions these images were built from. The images contain GPL-3.0, LGPL-3.0, Apache-2.0, BSD-3-Clause and ISC software; see \`THIRD_PARTY_NOTICES.md\`."
+          } > "${RUNNER_TEMP}/release-body.md"
+          cat "${RUNNER_TEMP}/release-body.md"
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v3
         with:
-          body: |
-            ## Images
-
-            | Image | Digest |
-            |-------|--------|
-            | `ghcr.io/otfabric/iec104-interop-lib60870:${{ github.ref_name }}` | `${{ steps.digests.outputs.lib60870 }}` |
-            | `ghcr.io/otfabric/iec104-interop-openmuc:${{ github.ref_name }}` | `${{ steps.digests.outputs.openmuc }}` |
-            | `ghcr.io/otfabric/iec104-interop-wendy512:${{ github.ref_name }}` | `${{ steps.digests.outputs.wendy512 }}` |
-
-            ## Pinning in a consumer
-
-            ```bash
-            IEC104_INTEROP_LIB60870_IMAGE=ghcr.io/otfabric/iec104-interop-lib60870@${{ steps.digests.outputs.lib60870 }}
-            IEC104_INTEROP_OPENMUC_IMAGE=ghcr.io/otfabric/iec104-interop-openmuc@${{ steps.digests.outputs.openmuc }}
-            IEC104_INTEROP_WENDY512_IMAGE=ghcr.io/otfabric/iec104-interop-wendy512@${{ steps.digests.outputs.wendy512 }}
-            ```
-
-            `manifest.json` records the upstream revisions these images were built from. The images contain GPL-3.0, LGPL-3.0 and Apache-2.0 software; see `THIRD_PARTY_NOTICES.md`. Notes: `RELEASE.md`.
+          name: iec104-interop ${{ github.ref_name }}
+          body_path: ${{ runner.temp }}/release-body.md
           files: |
             manifest.json
             checksums.txt

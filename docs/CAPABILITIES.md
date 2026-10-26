@@ -48,33 +48,35 @@ One JSON object on one line ([schema](../schemas/capabilities.schema.json)):
 
 ## Features
 
-| Feature | Meaning | lib60870 | openmuc | wendy512 |
-|---------|---------|:--------:|:-------:|:--------:|
-| `generalInterrogation` | Station interrogation (QOI 20), both roles | yes | yes | yes |
-| `groupInterrogation` | Interrogation groups 1..16 (the station refuses them) | no | no | no |
-| `counterInterrogation` | General counter request, read | yes | yes | yes |
-| `read` | Read command, including the refusal of an unknown address | yes | yes | yes |
-| `clockSync` | Clock synchronization command | yes | yes | yes |
-| `testCommand` | Test command with time tag (C_TS_TA_1) | yes | yes | yes |
-| `directCommands` | Execute without select | yes | yes | yes |
-| `selectBeforeOperate` | Select, execute, and `selectRequired` objects | yes | yes | yes |
-| `commandDeactivation` | Cancelling a selection (cause 8) | yes | yes | yes |
-| `timeTaggedCommands` | The CP56Time2a command types, as station and as controlling station | yes | yes | no ³ |
-| `spontaneousOnCommand` | The time-tagged report after an executed command | yes | yes | yes |
-| `apciParameters` | The `--k --w --t0..--t3` flags | yes | yes ¹ | yes ¹ |
-| `multipleConnections` | Independent simultaneous sessions | yes | yes | yes |
-| `pointQualityOnBitstring` | A quality descriptor other than good on `M_BO_NA_1` | no | no ² | no ² |
-| `tls` | IEC 62351-3 transport security | no | no | no |
-| `dataTransferEvents` | The server events `data-transfer-started` and `data-transfer-stopped` | yes | yes | no ⁴ |
-| `fileTransfer` | The file transfer types 120..125 in ASDU documents | yes | yes | no ⁵ |
-| `fileServer` | The station serves the `files` of a fixture | yes | no ⁶ | no ⁵ |
-| `fileClient` | The `file-get` operation | yes | yes | no ⁵ |
+| Feature | Meaning | lib60870 | openmuc | wendy512 | cbsigma |
+|---------|---------|:--------:|:-------:|:--------:|:-------:|
+| `generalInterrogation` | Station interrogation (QOI 20), both roles | yes | yes | yes | yes |
+| `groupInterrogation` | Interrogation groups 1..16 (the station refuses them) | no | no | no | no |
+| `counterInterrogation` | General counter request, read | yes | yes | yes | yes |
+| `read` | Read command, including the refusal of an unknown address | yes | yes | yes | yes |
+| `clockSync` | Clock synchronization command | yes | yes | yes | yes |
+| `testCommand` | Test command with time tag (C_TS_TA_1) | yes | yes | yes | yes |
+| `directCommands` | Execute without select | yes | yes | yes | yes |
+| `selectBeforeOperate` | Select, execute, and `selectRequired` objects | yes | yes | yes | yes |
+| `commandDeactivation` | Cancelling a selection (cause 8) | yes | yes | yes | yes |
+| `timeTaggedCommands` | The CP56Time2a command types, as station and as controlling station | yes | yes | no ³ | yes |
+| `spontaneousOnCommand` | The time-tagged report after an executed command | yes | yes | yes | yes |
+| `apciParameters` | The `--k --w --t0..--t3` flags | yes | yes ¹ | yes ¹ | yes ¹ |
+| `multipleConnections` | Independent simultaneous sessions | yes | yes | yes | yes |
+| `pointQualityOnBitstring` | A quality descriptor other than good on `M_BO_NA_1` | no | no ² | no ² | no ² |
+| `tls` | IEC 62351-3 transport security | no | no | no | no |
+| `dataTransferEvents` | The server events `data-transfer-started` and `data-transfer-stopped` | yes | yes | no ⁴ | yes ⁷ |
+| `fileTransfer` | The file transfer types 120..125 in ASDU documents | yes | yes | no ⁵ | yes |
+| `fileServer` | The station serves the `files` of a fixture | yes | no ⁶ | no ⁵ | yes |
+| `fileClient` | The `file-get` operation | yes | yes | no ⁵ | yes |
+| `secureAuthentication` | The [security flags](CONTAINER_CONTRACT.md#security-flags): the A-Profile of IEC 62351-5, as station and as controlling station | no | no | no | yes ⁸ |
 
 ¹ j60870 cannot switch the idle test off and requires `t3 >= t1`; go-iecp5
-requires every timer between 1 and 255 seconds. `--t3 0` is a usage error
-for both adapters.
+requires every timer between 1 and 255 seconds; cB-Sigma/iec60870 takes a
+timer of 0 for its default, so it cannot switch the idle test off either.
+`--t3 0` is a usage error for these three adapters.
 
-² j60870 and go-iecp5 could; the feature is declared for the fixture format
+² j60870, go-iecp5 and cB-Sigma/iec60870 could; the feature is declared for the fixture format
 as a whole, which only allows what every adapter can serve.
 
 ³ go-iecp5 encodes C_SC_TA_1 .. C_SE_TC_1 but has no length for them, so it
@@ -87,6 +89,16 @@ station never sees its confirmation.
 
 ⁶ j60870 has the information elements but no procedure; the adapter's client
 runs the procedure itself, its server does not.
+
+⁷ cB-Sigma/iec60870 tells the application when STARTDT is confirmed, but
+not when STOPDT is: the adapter watches the state of the link and emits
+`data-transfer-stopped` when it changes.
+
+⁸ The adapter is the only one with the A-Profile, so the secure cases of the
+self-tests run cB-Sigma against itself; their value is for consumers that
+pair it with another implementation. The flags give a station one
+certificate and one set of trusted authorities and pins, so the association
+is authenticated with certificates only.
 
 A capability is a property of the adapter and of the upstream version in the
 image. The self-tests read it from the image and skip what a pairing lacks

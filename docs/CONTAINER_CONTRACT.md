@@ -1,6 +1,6 @@
 # Container contract
 
-Version: **1.1** (`contract_version` in [versions.yaml](../versions.yaml))
+Version: **1.2** (`contract_version` in [versions.yaml](../versions.yaml))
 
 Every adapter image exposes the same commands, flags, JSON documents and exit
 codes. Consumers depend on this document, not on any adapter's source. A
@@ -10,6 +10,7 @@ and changes only with the major version.
 
 | Version | Change |
 |---------|--------|
+| 1.2 | The [security flags](#security-flags) of the A-Profile of IEC 62351-5; `secure` in the `ready` event; `secured` in the result document; the error `security-failed`; a mirror with cause 17 counts as a confirmation; the feature `secureAuthentication` |
 | 1.1 | The `file-get` operation, its `file` result and the file transfer ASDU documents; the `file-transfer` server event; `files` in fixtures; the features `fileServer`, `fileClient` and `dataTransferEvents` |
 | 1.0 | First release |
 
@@ -24,6 +25,7 @@ What a *station* does with a request is defined by its fixture: see
 
 - [Image layout](#image-layout)
 - [Commands](#commands)
+- [Security flags](#security-flags)
 - [`server`](#server)
 - [`client`](#client)
 - [ASDU documents](#asdu-documents)
@@ -74,9 +76,57 @@ Accepted by `server` and by every `client` operation. Times are in seconds.
 
 `1 <= w <= k <= 32767`, `0 < t2 < t1`. Whether `--t3 0` (idle test off) is
 accepted is adapter specific: lib60870 accepts it, OpenMUC requires
-`t3 >= t1`, wendy512 requires `t3 >= 1` and every timer at most 255 seconds.
+`t3 >= t1`, wendy512 requires `t3 >= 1` and every timer at most 255 seconds, cbsigma
+requires `t3 >= 1`.
 A value the library cannot run with is a usage error, never replaced by
 another one. See [CAPABILITIES.md](CAPABILITIES.md).
+
+## Security flags
+
+The application-layer security of IEC 62351-5 in the A-Profile of
+IEC TS 60870-5-7: an association between the controlling station and the
+controlled station, authenticated with certificates, and every ASDU after it
+protected by a MAC (and, with a data protection algorithm, encrypted). Only
+an image with the feature `secureAuthentication` accepts these flags; for any
+other they are unknown flags (exit 2).
+
+Accepted by `server` and by every `client` operation.
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--secure` | off | Run the A-Profile. Without it every other flag of this table is a usage error |
+| `--security-cert PATH` | required | Own certificate, PEM |
+| `--security-key PATH` | required | Own private key, PEM: PKCS #8 or SEC 1, on secp256r1 (P-256) or X25519 |
+| `--security-trust PATH` | required | The remote stations this one associates with, PEM, one or more certificates. A CA certificate (basic constraints CA:TRUE) is an authority: a station certificate it signed is accepted. Any other certificate is pinned: that station's self-signed certificate is accepted, by fingerprint |
+| `--association-id N` | 1 | The station's association identity, 1..65535: AIM of the controlling station (`client`), AIS of the controlled station (`server`) |
+
+`client` only:
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--mal N` | 4 | MAC algorithm the controlling station proposes, by its code |
+| `--dpa N` | `--mal` | Data protection algorithm, by its code |
+
+`server` only:
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--roles R,...` | none | The roles every controlling station has: `viewer`, `operator`, `engineer`, `installer`, `secadm`, `secaud`, `rbacmnt`. Without the flag there is no access control: everything is permitted |
+
+A key on X25519 cannot sign, so its certificate is signed by an authority;
+only a secp256r1 certificate can be self-signed and pinned. Which algorithm
+codes an image supports is the library's: an algorithm it does not support
+is a usage error.
+
+With `--secure`, the server accepts nothing but secured ASDUs; a client
+without security gets no answer (`timeout`). A request the roles of
+`--roles` do not permit is refused as [FIXTURES.md](FIXTURES.md) says. The
+client sets up the association after STARTDT con and waits for it within
+`--timeout-ms` before the operation starts; no association is the error
+`security-failed`.
+
+Key material is mounted into the container: the files must be readable by
+uid 10001.
 
 ## `server`
 
@@ -113,7 +163,7 @@ One JSON object per line on stdout.
 
 | `event` | Other fields | When |
 |---------|--------------|------|
-| `ready` | `adapter`, `address`, `fixture`, `commonAddress` | Once, when the station accepts connections |
+| `ready` | `adapter`, `address`, `fixture`, `commonAddress`; `secure` (true) with `--secure` | Once, when the station accepts connections |
 | `connection-opened` | `peer` (`ip:port`) | A controlling station connected |
 | `data-transfer-started` | `peer` | STARTDT confirmed. Only with the feature `dataTransferEvents` |
 | `data-transfer-stopped` | `peer` | STOPDT confirmed. Only with the feature `dataTransferEvents` |
@@ -162,6 +212,7 @@ the operation, close the connection.
 | `--timeout-ms N` | 5000 | Timeout of each wait for the station (STARTDT con, confirmation, termination, read answer) |
 | `--collect-ms N` | 0 | After a successful operation, keep receiving for this long before closing |
 | APCI flags | | |
+| [Security flags](#security-flags) | | |
 
 ### Operations
 
@@ -240,13 +291,15 @@ past argument parsing, including failures.
 | `stopdtConfirmed` | boolean | `connect` only: STOPDT con was received |
 | `confirmations` | array | `{ "cot", "negative" }` for each mirror of the request that confirms or refuses it, in order |
 | `terminated` | boolean | An activation termination of the request was received |
+| `secured` | boolean | With `--secure` only: the association was established |
 | `file` | object | `file-get` only: `ioa`, `name`, `length` (announced by file ready), `received` (octets that arrived), `sections` (sections called) and `sha256` (lower-case hex of what arrived) |
 | `asdus` | array | Every ASDU received, in order: see [ASDU documents](#asdu-documents) |
 | `elapsedMs` | number | Wall-clock duration |
 
 A mirror counts as a confirmation when it has the type of the request and
-cause 7, 9 or 44..47. `negative` is true when the P/N bit is set or the cause
-is 44..47.
+cause 7, 9, 17 or 44..47. `negative` is true when the P/N bit is set or the
+cause is 17 or 44..47. Cause 17 is the refusal of IEC 62351-5 (not
+authorized).
 
 `error.code`:
 
@@ -256,7 +309,8 @@ is 44..47.
 | `startdt-timeout` | No STARTDT con within `--timeout-ms` | 1 |
 | `stopdt-timeout` | `connect`: no STOPDT con | 1 |
 | `timeout` | The station did not answer in time | 1 |
-| `negative-confirmation` | The station refused: negative confirmation or cause 44..47 | 1 |
+| `negative-confirmation` | The station refused: negative confirmation or cause 17 or 44..47 | 1 |
+| `security-failed` | `--secure`: no association with the station within `--timeout-ms` | 1 |
 | `connection-lost` | The connection closed during the operation | 1 |
 | `failed` | Anything else; see `message` | 1 |
 

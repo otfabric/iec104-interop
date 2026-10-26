@@ -10,6 +10,7 @@
 #   - a general interrogation returns exactly the points of the fixture,
 #   - a command changes what a later interrogation reports,
 #   - k = w = 1, an idle connection and concurrent sessions work.
+# And tests/secure-cases.tsv for the pairings that have the security flags.
 #
 # tests/known-bugs.tsv lists bugs of specific upstream versions; a case they
 # explain is counted as a known bug instead of a failure.
@@ -257,6 +258,62 @@ while IFS=$'\t' read -r file_ioa file_name file_size; do
         done
     done
 done < <(jq -r '.files[]? | [.ioa, .name, .size] | @tsv' "${FIXTURE}")
+
+# ---- security: the A-Profile of IEC 62351-5 ----
+# tests/secure-cases.tsv, for every pairing that declares secureAuthentication.
+# "@NAME" in a flag list is the identity NAME of make_identities.
+SECURE_CASES="${ROOT}/tests/secure-cases.tsv"
+identity() { sed -E 's#@([a-z-]+)#--secure --security-cert /secrets/\1.pem --security-key /secrets/\1.key#g' <<<"$1"; }
+secure_pairs=0
+for server in "${ADAPTERS[@]}"; do
+    for client in "${ADAPTERS[@]}"; do
+        supported "${client}" "${server}" "server:secureAuthentication,client:secureAuthentication" \
+            && secure_pairs=$((secure_pairs + 1))
+    done
+done
+if (( secure_pairs > 0 )); then
+    make_identities "${WORK}/secrets" || { fail "cannot make key material with openssl"; finish; exit 1; }
+    DOCKER_ARGS=(-v "${WORK}/secrets:/secrets:ro")
+    n=0
+    while IFS=$'\t' read -r want_exit want_summary server_flags operation; do
+        [[ -z "${want_exit}" || "${want_exit}" == \#* ]] && continue
+        n=$((n + 1))
+        server_flags=$(identity "${server_flags}"); operation=$(identity "${operation}")
+        reference="" reference_pair=""
+        for server in "${ADAPTERS[@]}"; do
+            for client in "${ADAPTERS[@]}"; do
+                pair="${client}->${server}"
+                supported "${client}" "${server}" "server:secureAuthentication,client:secureAuthentication" || continue
+                # shellcheck disable=SC2086
+                name=$(SERVER_TAG=secure start_server "${server}" ${server_flags}); wait_ready "${name}" || exit 1
+                # shellcheck disable=SC2086
+                doc=$(run_client "${client}" ${operation} --host "${name}"); CLIENT_EXIT=$?
+                stop_server "${name}"
+                keep "secure${n}-${pair}" "${doc}"
+                summary=$(jq -r "${SUMMARY}"' + " secured=\(.secured)"' <<<"${doc}" 2>/dev/null)
+                if [[ "${summary}" != "${want_summary}" || "${CLIENT_EXIT}" != "${want_exit}" ]]; then
+                    fail "${pair}: secure: server ${server_flags}: ${operation}"
+                    log "    want exit=${want_exit} ${want_summary}"
+                    log "    got  exit=${CLIENT_EXIT} ${summary:-<no result document>}"
+                    continue
+                fi
+                ok "${pair}: secure: ${operation}"
+                normalized=$(jq -cS "${NORMALIZE}" <<<"${doc}")
+                if [[ -z "${reference}" ]]; then
+                    reference="${normalized}"; reference_pair="${pair}"
+                elif [[ "${normalized}" != "${reference}" ]]; then
+                    fail "${pair} and ${reference_pair} disagree on: secure ${operation}"
+                    diff <(jq -S . <<<"${reference}") <(jq -S . <<<"${normalized}") | head -20 >&2
+                else
+                    ok "${pair} agrees with ${reference_pair}: secure ${operation}"
+                fi
+            done
+        done
+    done < "${SECURE_CASES}"
+    DOCKER_ARGS=()
+else
+    skip "security: no pairing declares secureAuthentication"
+fi
 
 # ---- a known bug that no longer shows is a stale entry ----
 while IFS=$'\t' read -r bug_adapter bug_regex bug_text; do

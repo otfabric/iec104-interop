@@ -63,6 +63,11 @@ expect_exit 2 "command without --value" "${IMAGE}" client command --host nowhere
 expect_exit 2 "command with a bad value" "${IMAGE}" client command --host nowhere --type C_SE_NB_1 --ioa 504 --value 99999
 expect_exit 2 "server with an unknown flag" "${IMAGE}" server --frobnicate
 expect_exit 2 "server with invalid APCI parameters" "${IMAGE}" server --k 4 --w 9
+# A security flag is unknown to an image without secureAuthentication; for
+# one with it, every flag needs --secure and --secure needs the identity.
+expect_exit 2 "server --secure without key material" "${IMAGE}" server --secure
+expect_exit 2 "client --mal without --secure" "${IMAGE}" client interrogate --host nowhere --mal 4
+expect_exit 2 "server --roles without --secure" "${IMAGE}" server --roles viewer
 
 # ---- an invalid fixture stops the server before it listens ----
 bad=$(mktemp -d)
@@ -123,6 +128,30 @@ last=$(docker logs "${name}" 2>/dev/null | tail -1)
 if [[ "${code}" == 0 ]]; then ok "SIGTERM: exit 0"; else fail "SIGTERM: exit ${code}"; fi
 if jq -e '.event == "stopped"' <<<"${last}" >/dev/null 2>&1; then ok "stopped event"; else fail "last stdout line is not the stopped event: ${last}"; fi
 stop_server "${name}"
+
+# ---- security: the ready event of a secure server ----
+if jq -e '.features.secureAuthentication == true' <<<"${caps}" >/dev/null 2>&1; then
+    secrets=$(mktemp -d)
+    trap 'rm -rf "${bad}" "${secrets}"; cleanup' EXIT
+    if make_identities "${secrets}"; then
+        DOCKER_ARGS=(-v "${secrets}:/secrets:ro")
+        name=$(start_server "${ADAPTER}" --secure --security-cert /secrets/station.pem \
+            --security-key /secrets/station.key --security-trust /secrets/ca.pem)
+        if wait_ready "${name}"; then ok "secure server becomes ready"; else fail "secure server did not become ready"; fi
+        first=$(docker logs "${name}" 2>/dev/null | head -1)
+        if jq -e '.event == "ready" and .secure == true' <<<"${first}" >/dev/null 2>&1
+        then ok "ready event of a secure server"; else fail "ready event without secure: ${first}"; fi
+        stop_server "${name}"
+        expect_exit 2 "client --secure without a trust file" "${DOCKER_ARGS[@]}" "${IMAGE}" client interrogate \
+            --host nowhere --secure --security-cert /secrets/scada.pem --security-key /secrets/scada.key
+        expect_exit 2 "client with a key that is not a key" "${DOCKER_ARGS[@]}" "${IMAGE}" client interrogate \
+            --host nowhere --secure --security-cert /secrets/scada.pem --security-key /secrets/scada.pem \
+            --security-trust /secrets/ca.pem
+        DOCKER_ARGS=()
+    else
+        fail "cannot make key material with openssl"
+    fi
+fi
 
 # ---- a port that is already taken ----
 name=$(start_server "${ADAPTER}"); wait_ready "${name}"

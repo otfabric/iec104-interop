@@ -15,6 +15,10 @@ WAIT_TIMEOUT="${WAIT_TIMEOUT:-60}"
 PASS=0
 FAIL=0
 
+# DOCKER_ARGS: extra "docker run" arguments of start_server and run_client,
+# such as a mount: DOCKER_ARGS=(-v "${dir}:/secrets:ro").
+DOCKER_ARGS=()
+
 log()  { echo "[$(basename "$0" .sh)] $*" >&2; }
 ok()   { PASS=$((PASS + 1)); [[ -n "${VERBOSE:-}" ]] && log "ok: $*"; return 0; }
 fail() { FAIL=$((FAIL + 1)); log "FAIL: $*"; return 0; }
@@ -47,7 +51,7 @@ start_server() {
     name=$(server_name "${adapter}")
     docker rm -f "${name}" >/dev/null 2>&1
     docker run -d --name "${name}" --network "${NETWORK}" \
-        --label "iec104-interop.run=${RUN_ID}" \
+        --label "iec104-interop.run=${RUN_ID}" ${DOCKER_ARGS[@]+"${DOCKER_ARGS[@]}"} \
         "$(image_of "${adapter}")" server "$@" >/dev/null
     echo "${name}"
 }
@@ -77,13 +81,48 @@ stop_server() { docker rm -f "$1" >/dev/null 2>&1; return 0; }
 run_client() {
     local adapter="$1"; shift
     docker run --rm --network "${NETWORK}" --label "iec104-interop.run=${RUN_ID}" \
-        "$(image_of "${adapter}")" client "$@" 2>/dev/null
+        ${DOCKER_ARGS[@]+"${DOCKER_ARGS[@]}"} "$(image_of "${adapter}")" client "$@" 2>/dev/null
+}
+
+# make_identities <dir>: key material for the security flags, made with
+# openssl, valid for two days. Every key is on secp256r1.
+#   ca            an authority (CA:TRUE)
+#   station       the controlled station, signed by ca
+#   scada         a controlling station, signed by ca
+#   rogue         a controlling station nobody trusts (self-signed)
+#   pin-station   self-signed controlled station, trusted by pin
+#   pin-scada     self-signed controlling station, trusted by pin
+# Mount <dir> read-only; the files are readable by the uid of the images.
+make_identities() {
+    local dir="$1" n
+    command -v openssl >/dev/null || { log "missing required tool: openssl"; return 1; }
+    mkdir -p "${dir}" && chmod 755 "${dir}"
+    openssl req -x509 -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 \
+        -keyout "${dir}/ca.key" -out "${dir}/ca.pem" -subj "/CN=iec104-interop CA" \
+        -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign 2>/dev/null || return 1
+    for n in station scada; do
+        openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+            -keyout "${dir}/${n}.key" -out "${dir}/${n}.csr" -subj "/CN=${n}" 2>/dev/null || return 1
+        openssl x509 -req -in "${dir}/${n}.csr" -CA "${dir}/ca.pem" -CAkey "${dir}/ca.key" -days 2 \
+            -out "${dir}/${n}.pem" \
+            -extfile <(printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyAgreement\n') \
+            2>/dev/null || return 1
+    done
+    for n in rogue pin-station pin-scada; do
+        openssl req -x509 -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 \
+            -keyout "${dir}/${n}.key" -out "${dir}/${n}.pem" -subj "/CN=${n}" \
+            -addext basicConstraints=critical,CA:FALSE 2>/dev/null || return 1
+    done
+    rm -f "${dir}"/*.csr
+    chmod 644 "${dir}"/*
 }
 
 # What two adapters must agree on: everything except who answered, how long it
-# took and the wall-clock time tags.
+# took, the wall-clock time tags and the NOS of the last-section F_LS_NA_1
+# (LSQ 1 or 2), which the stacks fill differently (docs/FIXTURES.md).
 # shellcheck disable=SC2034
-NORMALIZE='del(.adapter, .elapsedMs) | (.asdus[]?.objects[]? |= del(.time))'
+NORMALIZE='del(.adapter, .elapsedMs) | (.asdus[]?.objects[]? |= del(.time))
+    | (.asdus[]? |= if .type == "F_LS_NA_1" then (.objects[]? |= if .lsq == 1 or .lsq == 2 then del(.nos) else . end) else . end)'
 
 # One line that states the outcome of an operation; the expectation format of
 # tests/cases.tsv.

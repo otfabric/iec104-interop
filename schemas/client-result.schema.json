@@ -23,7 +23,7 @@
           "properties": {
             "code": {
               "enum": ["connect-failed", "startdt-timeout", "stopdt-timeout", "timeout", "negative-confirmation",
-                       "connection-lost", "failed"]
+                       "connection-lost", "security-failed", "failed"]
             },
             "message": { "type": "string" }
           }
@@ -39,12 +39,13 @@
         "type": "object",
         "required": ["cot", "negative"],
         "properties": {
-          "cot": { "enum": [7, 9, 44, 45, 46, 47] },
+          "cot": { "enum": [7, 9, 17, 44, 45, 46, 47] },
           "negative": { "type": "boolean" }
         }
       }
     },
     "terminated": { "type": "boolean" },
+    "secured": { "description": "With --secure only: the association was established.", "type": "boolean" },
     "file": {
       "description": "file-get only: what was downloaded.",
       "type": "object",

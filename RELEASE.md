@@ -2,10 +2,17 @@
 
 ## How a release is made
 
-1. `make ci` on the commit to release.
-2. Update `interop_version` in `versions.yaml` and the notes below.
-3. Tag `vX.Y.Z` and push the tag. The release workflow runs one job on an amd64 runner and one on an arm64 runner: each validates, builds every image natively with `ADAPTER_VERSION` set to the tag, runs the smoke and cross-stack self-tests on those images and pushes exactly them to GHCR as `<image>:vX.Y.Z-amd64` and `-arm64`. A last job joins the two into the multi-arch `<image>:vX.Y.Z` and creates the GitHub release with `manifest.json` (upstream pins and the digests of the multi-arch images) and `checksums.txt`.
+1. Write the notes of the version below and set `interop_version` in `versions.yaml` to it, in the same change. `make validate` (and CI) fails when RELEASE.md has no notes for `interop_version`.
+2. `make ci` on the commit to release.
+3. Tag `vX.Y.Z` and push the tag. The release workflow runs one job on an amd64 runner and one on an arm64 runner: each validates (including the notes of the tag), builds every image natively with `ADAPTER_VERSION` set to the tag, runs the smoke and cross-stack self-tests on those images and pushes exactly them to GHCR as `<image>:vX.Y.Z-amd64` and `-arm64`. A last job joins the two into the multi-arch `<image>:vX.Y.Z` and creates the GitHub release with `manifest.json` (upstream pins and the digests of the multi-arch images) and `checksums.txt`.
 4. Consumers pin the digests from `manifest.json`.
+
+The notes are the body of the GitHub release, followed by the image digests:
+everything after the heading `## vX.Y.Z` up to the next line that is exactly
+`---` (`scripts/release-notes.sh vX.Y.Z` prints it). This is the format of
+every otfabric repository and the rule of the shared release workflow, so:
+one section per version, newest first, each ending with a `---` line, and no
+`---` line inside a section.
 
 Tags are immutable. A fix is a new version.
 
@@ -14,6 +21,51 @@ Tags are immutable. A fix is a new version.
 | Contract or fixture format changed incompatibly | major |
 | New operation, behaviour, fixture, adapter or document field | minor |
 | Upstream pin, base image or bug fix with unchanged contract | patch |
+
+---
+
+## v0.3.0
+
+**Date:** 2026-10-26
+
+## Summary
+
+A fourth independent reference implementation, cB-Sigma/iec60870, and with
+it the first one with application-layer security: the A-Profile of
+IEC 62351-5 (IEC TS 60870-5-7). Container contract 1.2: additions only,
+documents keep `schemaVersion` `"1.0"`.
+
+## Changes
+
+### Added
+
+- **`cbsigma` adapter** — [cB-Sigma/iec60870](https://github.com/cB-Sigma/iec60870) v0.3.0, Go, client and server. Image `ghcr.io/otfabric/iec104-interop-cbsigma`. Every operation of contract 1.1, time-tagged commands, file transfer as station and as controlling station, the data-transfer events, and the security flags.
+- **Security flags** (contract 1.2), for images with the feature `secureAuthentication`: `--secure`, `--security-cert`, `--security-key`, `--security-trust` (CA certificates are authorities, other certificates pins of self-signed ones), `--association-id`; `--mal` and `--dpa` for the client, `--roles` for the server. The `ready` event says `secure`, the result document `secured`, and the error `security-failed` means no association. A mirror with cause 17 (not authorized) counts as a negative confirmation; with `--roles`, a request the roles do not permit is refused that way.
+- **Secure self-tests** — `tests/secure-cases.tsv` runs for every pairing that declares `secureAuthentication`, against key material made with openssl for the run (`make_identities` in `scripts/lib.sh`): authority and pinned certificates, HMAC-SHA-256 and AES-256-GCM, other association identities, a viewer refused with cause 17 and an operator executed, untrusted stations on either side, a client without security. The smoke test checks the usage errors of the flags on every image and the `ready` event of a secure server.
+- **Upstream candidates workflow** probes cB-Sigma/iec60870 as well; `make candidate-cbsigma` does it locally.
+- `compose.yaml` and `make run-cbsigma` serve the fourth station on 127.0.0.1:2407.
+
+### Changed
+
+- `secureAuthentication` is a required feature of the capability document; lib60870, openmuc and wendy512 declare it false.
+- The fixture rules say what a station does with a file deactivation (nothing) and leave the NOS of the last-section F_LS_NA_1 to the library; the agreement check no longer compares that field.
+- `make interop` covers sixteen pairings: 1223 checks, 88 skipped for undeclared capabilities.
+- The release `manifest.json` says `contract: "1.2"` and lists the fourth image and its upstream version.
+- **Release notes come from RELEASE.md**, as in every otfabric repository: the section of the tag, up to its `---` line, is the body of the GitHub release (followed by the image digests), and the release is titled `iec104-interop vX.Y.Z`. `scripts/release-notes.sh` extracts it; `make validate`, CI and the release workflow fail when the notes of the version are missing.
+
+### Upstream notes
+
+- cB-Sigma/iec60870 v0.3.0 sends one less than lib60870 as the NOS of the last section, cuts segments of 200 octets unless told otherwise, deactivates a file after a refused selection, has no STOPDT notification, takes a timer of 0 for its default and asks for the file write permission for the acknowledgement of a download. Details in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+
+### For consumers
+
+- Nothing changes for a consumer of the three existing images unless it validates capability documents against a copy of the old schema.
+- A consumer that tests IEC 62351-5 mounts key material into the cbsigma image; see [README.md](README.md#using-the-images-from-a-librarys-tests) and the [security flags](docs/CONTAINER_CONTRACT.md#security-flags).
+
+### Not in this release
+
+- Eclipse OneOFour and Fraunhofer iec104-python adapters.
+- TLS (IEC 62351-3) flags.
 
 ---
 
@@ -95,3 +147,5 @@ server, behind container contract 1.0.
 
 - wendy512/iec104, Eclipse OneOFour and Fraunhofer iec104-python adapters.
 - TLS, file transfer, interrogation groups, redundancy.
+
+---
