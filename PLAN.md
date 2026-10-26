@@ -60,7 +60,7 @@ Evaluation: both roles exist; the latest tag is v0.3.0 (Apache-2.0, with Apache-
 - Go adapter, both roles, every operation of contract 1.1, time-tagged commands, file transfer as station and as controlling station.
 - Contract 1.2: the security flags, the feature `secureAuthentication` and secure self-tests.
 
-**Gate:** smoke test and cross-stack self-test for the roles it declares, and the secure cases. Met (36 smoke checks; 1223 cross-stack checks over sixteen pairings on j60870 1.7.2, 88 skipped for undeclared capabilities; on 1.8.0, 1172 passed and 23 were its known read bug). Findings are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+**Gate:** smoke test and cross-stack self-test for the roles it declares, and the secure cases. Met (36 smoke checks; on j60870 1.7.2, 1223 cross-stack checks over sixteen pairings, all passed; on 1.8.0, 1195 checks, 1172 passed and 23 its known read bug, the difference being the agreement checks a known bug suspends; 88 skipped for undeclared capabilities in both). Findings are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
 ### Remaining
 

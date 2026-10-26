@@ -40,7 +40,7 @@ release behind.
 
 - **OpenMUC j60870 1.7.2 → 1.8.0.** 1.8.0 cannot decode a read command (C_RD_NA_1) and closes the connection on one: as a station on any read, as a controlling station when a read is refused. The bug is listed in `tests/known-bugs.tsv`, so the read cases of openmuc pairings count as known upstream bugs, and the self-test fails with "known bug did not reproduce" once a release fixes it. A fix is proposed upstream in [gythialy/j60870#75](https://github.com/gythialy/j60870/pull/75). 1.8.0 adds no protocol functionality a test can use. Details in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 - The rule for upstream pins is the latest release, also when it has a bug: the bug goes into `tests/known-bugs.tsv` ([CONTRIBUTING.md](CONTRIBUTING.md)).
-- `make interop`: 1172 checks passed, 23 known j60870 read bugs, 88 skipped for undeclared capabilities.
+- `make interop`: 1195 checks, of which 1172 passed and 23 are the known j60870 read bug, none failed, and 88 skipped for undeclared capabilities. That is 28 checks fewer than v0.3.0's 1223: an operation the known bug may affect is not compared across pairings (the agreement check), only its outcome is checked.
 
 ### For consumers
 
@@ -73,7 +73,7 @@ documents keep `schemaVersion` `"1.0"`.
 
 - `secureAuthentication` is a required feature of the capability document; lib60870, openmuc and wendy512 declare it false.
 - The fixture rules say what a station does with a file deactivation (nothing) and leave the NOS of the last-section F_LS_NA_1 to the library; the agreement check no longer compares that field.
-- `make interop` covers sixteen pairings: 1223 checks, 88 skipped for undeclared capabilities.
+- `make interop` covers sixteen pairings: 1223 checks, all passed (none failed, no known upstream bugs), and 88 skipped for undeclared capabilities.
 - The release `manifest.json` says `contract: "1.2"` and lists the fourth image and its upstream version.
 - **Release notes come from RELEASE.md**, as in every otfabric repository: the section of the tag, up to its `---` line, is the body of the GitHub release (followed by the image digests), and the release is titled `iec104-interop vX.Y.Z`. `scripts/release-notes.sh` extracts it; `make validate`, CI and the release workflow fail when the notes of the version are missing.
 

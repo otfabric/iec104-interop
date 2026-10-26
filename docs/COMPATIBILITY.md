@@ -94,9 +94,11 @@ security flags, which only cbsigma has.
 
 Verified on linux/arm64 with the pins above on 2026-10-26: 39 cases, the
 value checks and the session checks over 16 pairings, and the 10 secure
-cases for cbsigma against itself; 1172 checks passed, none failed, 23 were
-the known read bug of j60870 1.8.0 and 88 were skipped for a capability that
-is not declared.
+cases for cbsigma against itself; 1195 checks, of which 1172 passed and 23
+were the known read bug of j60870 1.8.0, none failed, and 88 were skipped for
+a capability that is not declared. On j60870 1.7.2 (v0.3.0) the same run had
+1223 checks, all passed: an operation a known bug may affect is not compared
+across pairings, so the known-bug entry removes 28 agreement checks.
 
 Covered by every pairing: STARTDT/STOPDT; general interrogation (station, broadcast address,
 unknown station, unsupported group); counter interrogation; read of a
