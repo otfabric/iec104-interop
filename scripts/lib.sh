@@ -14,14 +14,16 @@ WAIT_TIMEOUT="${WAIT_TIMEOUT:-60}"
 
 PASS=0
 FAIL=0
+# shellcheck source=scripts/results.sh
+source "$(dirname "${BASH_SOURCE[0]}")/results.sh"
 
 # DOCKER_ARGS: extra "docker run" arguments of start_server and run_client,
 # such as a mount: DOCKER_ARGS=(-v "${dir}:/secrets:ro").
 DOCKER_ARGS=()
 
 log()  { echo "[$(basename "$0" .sh)] $*" >&2; }
-ok()   { PASS=$((PASS + 1)); [[ -n "${VERBOSE:-}" ]] && log "ok: $*"; return 0; }
-fail() { FAIL=$((FAIL + 1)); log "FAIL: $*"; return 0; }
+ok()   { PASS=$((PASS + 1)); result pass; [[ -n "${VERBOSE:-}" ]] && log "ok: $*"; return 0; }
+fail() { FAIL=$((FAIL + 1)); result fail "$*"; log "FAIL: $*"; return 0; }
 
 image_of() { echo "${REGISTRY}/iec104-interop-$1:${VERSION}"; }
 
@@ -137,5 +139,6 @@ finish() {
     [[ "${KNOWN}" -gt 0 ]] && extra="${extra}, ${KNOWN} known upstream bugs"
     [[ "${SKIPPED:-0}" -gt 0 ]] && extra="${extra}, ${SKIPPED} skipped (capability not declared)"
     log "${PASS} passed, ${FAIL} failed${extra}"
-    [[ "${FAIL}" -eq 0 ]]
+    results_close || FAIL=$((FAIL + 1))
+    [[ "${FAIL}" -eq 0 && "${PASS}" -gt 0 ]]
 }
