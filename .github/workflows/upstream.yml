@@ -68,7 +68,7 @@ jobs:
 
       - name: Build and self-test at the latest upstream
         id: test
-        if: steps.resolve.outputs.update == 'yes'
+        if: steps.resolve.outputs.update == 'yes' || steps.resolve.outputs.update == 'info'
         uses: otfabric/.github/actions/upstream-candidate@main
         with:
           name: ${{ matrix.component }}

@@ -8,12 +8,14 @@ workflow:
 
     pin=<the release pin>
     latest=<the latest stable upstream release>
-    update=yes|no
+    update=yes|no|info
     source=<where latest was looked up>
     args=<make variables of the candidate: make candidate-<adapter> <args>>
 
 lib60870-head is the tip of the default branch of lib60870, compared with the
-pinned commit (commits are shown with 12 digits); the others follow stable
+pinned commit (commits are shown with 12 digits). A newer tip is built and
+self-tested, but it is update=info: the pin follows releases, so a new
+commit alone does not open the issue. The others follow stable
 X.Y.Z releases. A newer tag on the same commit as the pin is the same code:
 not an update. wendy512 is two modules, iec104 and its engine go-iecp5; it is
 behind when either is. Nothing is modified.
@@ -134,7 +136,8 @@ def main():
     pin, latest, behind, source, args = RESOLVERS[sys.argv[1]]()
     print(f"pin={pin}")
     print(f"latest={latest}")
-    print(f"update={'yes' if behind else 'no'}")
+    update = "no" if not behind else "info" if sys.argv[1] == "lib60870-head" else "yes"
+    print(f"update={update}")
     print(f"source={source}")
     print(f"args={args}")
 
