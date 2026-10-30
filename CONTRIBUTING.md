@@ -34,7 +34,7 @@ Adapter sources link GPL-3.0 libraries: keep the `SPDX-License-Identifier: GPL-3
 
 The rule is the latest upstream release, also when it has a bug: list the bug in [tests/known-bugs.tsv](tests/known-bugs.tsv) (the matching cases then count as known bugs, not failures) and describe it in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md), rather than pinning an older release. Stay behind only when the bug costs the coverage of a whole stack, and then build the latest release as a candidate (`make candidate-openmuc` is the model). When a run reports that a known bug no longer reproduces, remove its entry.
 
-The **Upstream candidates** workflow does this probe every week for every stack and summarizes it as a decision table; `make candidate-openmuc`, `make candidate-lib60870 LIB60870_CANDIDATE_SHA=<commit>`, `make candidate-wendy512` and `make candidate-cbsigma` run the same thing locally.
+The **Upstream** workflow does this probe every day for every stack whose pin is behind and reports it in a pin-vs-latest table and in the issue "Upstream releases: pins behind the latest"; `scripts/latest-upstream.py <component>` prints pin and latest, and `make candidate-openmuc`, `make candidate-lib60870 LIB60870_CANDIDATE_SHA=<commit>`, `make candidate-wendy512` and `make candidate-cbsigma` run the same thing locally.
 
 ## Registries and retries
 

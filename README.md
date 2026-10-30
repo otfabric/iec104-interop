@@ -160,7 +160,7 @@ iec104-interop/
 ├── tests/cases.tsv      self-test cases: operation, expected outcome, features needed
 ├── tests/secure-cases.tsv  self-test cases of the security flags
 ├── tests/known-bugs.tsv bugs of upstream versions that are built as candidates
-├── scripts/             validate, smoke, cross-stack self-test
+├── scripts/             validate, smoke, cross-stack self-test, upstream check
 ├── docs/                contract, fixtures, capabilities, compatibility
 ├── versions.yaml        every upstream pin and base image digest
 ├── compose.yaml         the reference servers on loopback
@@ -177,9 +177,12 @@ make buildx      # check the other architecture locally, under emulation (CI bui
 make candidate-openmuc   # self-test the adapter on the latest j60870 instead of the pin
 ```
 
-The **Upstream candidates** workflow runs that probe weekly for lib60870,
-j60870, wendy512/iec104 with go-iecp5 and cB-Sigma/iec60870 and reports pin versus latest in
-its job summary.
+The **Upstream** workflow checks every pin daily against the latest upstream
+(`scripts/latest-upstream.py`: lib60870 and the tip of its default branch,
+j60870, wendy512/iec104 with go-iecp5, cB-Sigma/iec60870) and the base-image
+digests. It runs that probe for every stack that is behind and reports pin
+versus latest in its job summary and in the issue "Upstream releases: pins
+behind the latest".
 
 `make smoke ADAPTERS=lib60870` and `VERBOSE=1 make interop` narrow and
 expand what is run and shown. See [CONTRIBUTING.md](CONTRIBUTING.md) for

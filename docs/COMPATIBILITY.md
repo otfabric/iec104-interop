@@ -30,11 +30,13 @@ code.
 The pins live in the Dockerfiles, `adapters/openmuc/pom.xml`,
 `adapters/wendy512/go.mod` and `adapters/cbsigma/go.mod` and are mirrored in
 [versions.yaml](../versions.yaml); `scripts/check-versions.sh` keeps them in
-step. The **Upstream candidates** workflow
-(`.github/workflows/candidate.yml`, weekly and on demand) resolves the latest
-release of each stack and the tip of lib60870, builds the adapters on them,
-runs the smoke and cross-stack self-tests and writes a pin-vs-latest decision
-table to its job summary. It never changes a pin.
+step. The **Upstream** workflow
+(`.github/workflows/upstream.yml`, daily and on demand) resolves the latest
+release of each stack and the tip of lib60870 (`scripts/latest-upstream.py`),
+builds the adapters on those that are newer than the pin, runs the smoke and
+cross-stack self-tests and writes a pin-vs-latest table to its job summary
+and to the issue "Upstream releases: pins behind the latest". It never
+changes a pin.
 
 The tip of go-iecp5 is not probed: its default branch (commit `4499b147`,
 2026-05-23) declares the module path `github.com/juanjorosendo/go-iecp5` in

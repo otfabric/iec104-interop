@@ -1,0 +1,133 @@
+name: Upstream
+run-name: "Upstream check (${{ github.event_name }})"
+
+# Daily check of every pin against the latest upstream: the release of every
+# stack and the tip of lib60870's default branch (scripts/latest-upstream.py),
+# and the digest of every base image. A stack whose pin is behind is built at
+# the latest upstream and self-tested (once per pin -> latest pair; later runs
+# reuse that result). The table goes to the Job Summary and to the issue
+# "Upstream releases: pins behind the latest", which is opened or updated
+# (with a comment when a new version shows up) and closed once every pin is
+# current. Pins (Dockerfiles, pom.xml, go.mod, versions.yaml) are never
+# changed here: a bump is a reviewed change.
+#
+# A candidate is tested like a release: smoke test plus the cross-stack
+# self-test against the pinned other stacks (make candidate-<adapter>). Bugs
+# of a specific upstream version listed in tests/known-bugs.tsv are reported
+# as known rather than as failures, so one upstream bug does not hide whether
+# everything else works. Shared steps:
+# https://github.com/otfabric/.github/tree/main/actions
+on:
+  schedule:
+    - cron: "19 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream
+  cancel-in-progress: false
+
+env:
+  # Nothing is pulled from Docker Hub: anonymous pulls are rate limited per
+  # runner address and its token service times out under load. Base images
+  # (pinned by digest) and build tooling come from Google's mirror of it, and
+  # every registry operation is retried on transient failures (scripts/retry.sh).
+  BASE_REGISTRY: mirror.gcr.io/library
+  TOOLS_REGISTRY: mirror.gcr.io
+
+jobs:
+  images:
+    name: Base images
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: otfabric/.github/actions/upstream-images@main
+
+  candidate:
+    name: ${{ matrix.component }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { component: lib60870, adapter: lib60870, kind: library }
+          - { component: lib60870-head, adapter: lib60870, kind: commit }
+          - { component: j60870, adapter: openmuc, kind: library }
+          - { component: wendy512, adapter: wendy512, kind: library }
+          - { component: cbsigma, adapter: cbsigma, kind: library }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve the pin against upstream
+        id: resolve
+        run: scripts/latest-upstream.py "${{ matrix.component }}" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Build and self-test at the latest upstream
+        id: test
+        if: steps.resolve.outputs.update == 'yes'
+        uses: otfabric/.github/actions/upstream-candidate@main
+        with:
+          name: ${{ matrix.component }}
+          pinned: ${{ steps.resolve.outputs.pin }}
+          latest: ${{ steps.resolve.outputs.latest }}
+          result-pattern: '^\[interop\] [0-9]+ passed'
+          command: make "candidate-${{ matrix.adapter }}" ${{ steps.resolve.outputs.args }}
+
+      - name: Known bugs of the latest release
+        id: known
+        if: always()
+        run: |
+          known=$(awk -F'\t' -v a="${{ matrix.adapter }}" -v v="${{ steps.resolve.outputs.latest }}" \
+            '$1 == a && $2 == v { printf "%s%s", sep, $4; sep = "; " }' tests/known-bugs.tsv)
+          echo "known=${known}" >> "$GITHUB_OUTPUT"
+
+      - name: Table row
+        if: always()
+        uses: otfabric/.github/actions/upstream-row@main
+        with:
+          component: ${{ matrix.component }}
+          kind: ${{ matrix.kind }}
+          source: ${{ steps.resolve.outputs.source }}
+          pinned: ${{ steps.resolve.outputs.pin }}
+          latest: ${{ steps.resolve.outputs.latest }}
+          update: ${{ steps.resolve.outputs.update }}
+          detail: ${{ steps.resolve.outcome == 'failure' && 'upstream lookup failed (see the job log)' || '' }}
+          test-outcome: ${{ steps.test.outputs.outcome }}
+          test-result: ${{ steps.test.outputs.result }}
+          test-cached: ${{ steps.test.outputs.cached }}
+          known: ${{ steps.known.outputs.known }}
+
+  report:
+    name: Report
+    runs-on: ubuntu-latest
+    needs: [images, candidate]
+    if: always()
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: otfabric/.github/actions/upstream-report@main
+        with:
+          needs: ${{ toJSON(needs) }}
+          notes: |
+            ### To update
+
+            - **lib60870:** `ARG LIB60870_VERSION` and `LIB60870_SHA` (both places) in
+              `adapters/lib60870/Dockerfile`. *lib60870-head* is the tip of the default branch:
+              information on what the next release brings; only releases are pinned.
+            - **j60870:** `ARG J60870_VERSION` in `adapters/openmuc/Dockerfile` and
+              `j60870.version` in `adapters/openmuc/pom.xml`.
+            - **wendy512, cbsigma:** `ARG IEC104_VERSION`, `GOIECP5_VERSION` / `IEC60870_VERSION`
+              in the adapter Dockerfile, and `go get <module>@<version> && go mod tidy` in the
+              adapter directory (go.mod and go.sum).
+            - Mirror the pin in `versions.yaml` (`scripts/check-versions.sh` checks it). Reproduce
+              a candidate with `make candidate-<adapter> <args>`, the `args` that
+              `scripts/latest-upstream.py <component>` prints; a `failure` needs the self-test
+              log of the run first. A *known bug ... did not reproduce* is good news: drop it
+              from `tests/known-bugs.tsv`.
+            - **Base image:** replace the digest in every file that pins it (and in `versions.yaml`).
+            - Record the change in `docs/COMPATIBILITY.md` and `RELEASE.md`.

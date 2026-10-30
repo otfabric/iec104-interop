@@ -112,6 +112,8 @@ interop: ## Cross-stack self-test: every client against every server
 # Builds an adapter on another upstream version than the release pin and runs
 # the self-tests on it. Bugs of that version listed in tests/known-bugs.tsv
 # are reported as known, so the run shows whether everything else still works.
+# The Upstream workflow runs these for every pin that is behind, with the
+# variables scripts/latest-upstream.py <component> prints as "args".
 
 J60870_CANDIDATE ?= 1.8.0
 

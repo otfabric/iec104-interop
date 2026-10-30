@@ -75,7 +75,7 @@ An adapter joins `ADAPTERS` in the Makefile and the CI matrix once it passes `ma
 
 ## Phase 6 - Expanded coverage (partly done)
 
-Done: the upstream candidates workflow (weekly probe of the latest lib60870, j60870, wendy512/iec104 with go-iecp5 and cB-Sigma/iec60870, with a pin-vs-latest decision table); IEC 62351-5 application-layer security (contract 1.2, one stack); capability-aware self-tests (a case names the features it needs and is skipped for a pairing that lacks one); file transfer in monitor direction (contract 1.1: `files` in fixtures, the `file-get` operation, a file server in the lib60870 adapter); commands of six types with and without time tag, select-before-operate and deactivation, counter interrogation, clock synchronization, time-tagged reports on command, `k`/`w` at 1, the idle test, concurrent sessions.
+Done: the Upstream workflow (daily probe of the latest lib60870, j60870, wendy512/iec104 with go-iecp5 and cB-Sigma/iec60870 and of the base images, with a pin-vs-latest table and a tracking issue); IEC 62351-5 application-layer security (contract 1.2, one stack); capability-aware self-tests (a case names the features it needs and is skipped for a pairing that lacks one); file transfer in monitor direction (contract 1.1: `files` in fixtures, the `file-get` operation, a file server in the lib60870 adapter); commands of six types with and without time tag, select-before-operate and deactivation, counter interrogation, clock synchronization, time-tagged reports on command, `k`/`w` at 1, the idle test, concurrent sessions.
 
 Open, each as a fixture or operation that every published adapter can serve:
 
