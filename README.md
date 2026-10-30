@@ -156,7 +156,7 @@ iec104-interop/
 ├── fixtures/
 │   ├── schema/          JSON Schema of the fixture format
 │   └── baseline/        the baseline station
-├── schemas/             JSON Schemas of the capability and client result documents
+├── schemas/             JSON Schemas of the capability and client result documents, interop-result-v1
 ├── tests/cases.tsv      self-test cases: operation, expected outcome, features needed
 ├── tests/secure-cases.tsv  self-test cases of the security flags
 ├── tests/known-bugs.tsv bugs of upstream versions that are built as candidates
@@ -183,6 +183,10 @@ j60870, wendy512/iec104 with go-iecp5, cB-Sigma/iec60870) and the base-image
 digests. It runs that probe for every stack that is behind and reports pin
 versus latest in its job summary and in the issue "Upstream releases: pins
 behind the latest".
+
+`make documents` also writes `reports/results.json`, the organisation's
+[interop-result-v1](schemas/interop-result-v1.schema.json). A run with no pass,
+or with a known bug that no longer reproduces, fails.
 
 `make smoke ADAPTERS=lib60870` and `VERBOSE=1 make interop` narrow and
 expand what is run and shown. See [CONTRIBUTING.md](CONTRIBUTING.md) for

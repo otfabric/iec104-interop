@@ -36,6 +36,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install jsonschema
+      - name: Unit tests of the result scripts
+        run: python3 -m unittest discover -q -s scripts -p 'test_*.py'
       - name: versions.yaml matches the build files
         run: scripts/check-versions.sh
       - name: RELEASE.md has the notes of interop_version

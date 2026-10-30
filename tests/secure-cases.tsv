@@ -3,30 +3,31 @@
 # each case against a freshly started server.
 #
 # Columns, separated by tabs:
-#   1  exit    expected exit code of the client
-#   2  summary as in tests/cases.tsv, followed by "secured=" and the field of
+#   1  id      stable dotted scenario id of results.json; never change it
+#   2  exit    expected exit code of the client
+#   3  summary as in tests/cases.tsv, followed by "secured=" and the field of
 #              the result document
-#   3  server flags
-#   4  client operation and its flags
+#   4  server flags
+#   5  client operation and its flags
 #
 # scripts/lib.sh (make_identities) makes the key material; it is mounted at
 # /secrets. "@NAME" stands for
 #   --secure --security-cert /secrets/NAME.pem --security-key /secrets/NAME.key
 #
 # Both stations trust the authority; MAC HMAC-SHA-256 (4) without encryption.
-0	ok=true error=- conf=7 term=true asdus=C_IC_NA_1/7,M_SP_NA_1/20,M_DP_NA_1/20,M_ST_NA_1/20,M_BO_NA_1/20,M_SP_NA_1/20,M_ME_NA_1/20,M_ME_NB_1/20,M_ME_NC_1/20,M_ME_NB_1/20,C_IC_NA_1/10 secured=true	@station --security-trust /secrets/ca.pem	interrogate @scada --security-trust /secrets/ca.pem
+secure.interrogate-scada-trust-ca	0	ok=true error=- conf=7 term=true asdus=C_IC_NA_1/7,M_SP_NA_1/20,M_DP_NA_1/20,M_ST_NA_1/20,M_BO_NA_1/20,M_SP_NA_1/20,M_ME_NA_1/20,M_ME_NB_1/20,M_ME_NC_1/20,M_ME_NB_1/20,C_IC_NA_1/10 secured=true	@station --security-trust /secrets/ca.pem	interrogate @scada --security-trust /secrets/ca.pem
 # Encryption: AEAD-AES-256-GCM (11), and other association identities.
-0	ok=true error=- conf=7 term=true asdus=C_SC_NA_1/7,M_SP_TB_1/11,C_SC_NA_1/10 secured=true	@station --security-trust /secrets/ca.pem --association-id 3	command --type C_SC_NA_1 --ioa 500 --value false @scada --security-trust /secrets/ca.pem --dpa 11 --association-id 5
-0	ok=true error=- conf=7,7 term=true asdus=C_DC_NA_1/7,C_DC_NA_1/7,M_DP_TB_1/3,C_DC_NA_1/10 secured=true	@station --security-trust /secrets/ca.pem	command --type C_DC_NA_1 --ioa 501 --value 1 --mode sbo @scada --security-trust /secrets/ca.pem --dpa 11
+secure.command-type-c-sc-na-1-ioa-500-value-false-scada-trust-ca-dpa-1	0	ok=true error=- conf=7 term=true asdus=C_SC_NA_1/7,M_SP_TB_1/11,C_SC_NA_1/10 secured=true	@station --security-trust /secrets/ca.pem --association-id 3	command --type C_SC_NA_1 --ioa 500 --value false @scada --security-trust /secrets/ca.pem --dpa 11 --association-id 5
+secure.command-type-c-dc-na-1-ioa-501-value-1-mode-sbo-scada-trust-ca	0	ok=true error=- conf=7,7 term=true asdus=C_DC_NA_1/7,C_DC_NA_1/7,M_DP_TB_1/3,C_DC_NA_1/10 secured=true	@station --security-trust /secrets/ca.pem	command --type C_DC_NA_1 --ioa 501 --value 1 --mode sbo @scada --security-trust /secrets/ca.pem --dpa 11
 # Self-signed certificates, trusted by pin.
-0	ok=true error=- conf=7 term=false asdus=C_TS_TA_1/7 secured=true	@pin-station --security-trust /secrets/pin-scada.pem	test-command @pin-scada --security-trust /secrets/pin-station.pem
+secure.test-command-pin-scada-trust-pin-station	0	ok=true error=- conf=7 term=false asdus=C_TS_TA_1/7 secured=true	@pin-station --security-trust /secrets/pin-scada.pem	test-command @pin-scada --security-trust /secrets/pin-station.pem
 # Role-based access control: a viewer may interrogate, not command.
-0	ok=true error=- conf=7 term=true asdus=C_IC_NA_1/7,M_SP_NA_1/20,M_DP_NA_1/20,M_ST_NA_1/20,M_BO_NA_1/20,M_SP_NA_1/20,M_ME_NA_1/20,M_ME_NB_1/20,M_ME_NC_1/20,M_ME_NB_1/20,C_IC_NA_1/10 secured=true	@station --security-trust /secrets/ca.pem --roles viewer	interrogate @scada --security-trust /secrets/ca.pem
-1	ok=false error=negative-confirmation conf=17n term=false asdus=C_SC_NA_1/17 secured=true	@station --security-trust /secrets/ca.pem --roles viewer	command --type C_SC_NA_1 --ioa 500 --value false @scada --security-trust /secrets/ca.pem
-0	ok=true error=- conf=7 term=true asdus=C_SC_NA_1/7,M_SP_TB_1/11,C_SC_NA_1/10 secured=true	@station --security-trust /secrets/ca.pem --roles viewer,operator	command --type C_SC_NA_1 --ioa 500 --value false @scada --security-trust /secrets/ca.pem
+secure.interrogate-scada-trust-ca-2	0	ok=true error=- conf=7 term=true asdus=C_IC_NA_1/7,M_SP_NA_1/20,M_DP_NA_1/20,M_ST_NA_1/20,M_BO_NA_1/20,M_SP_NA_1/20,M_ME_NA_1/20,M_ME_NB_1/20,M_ME_NC_1/20,M_ME_NB_1/20,C_IC_NA_1/10 secured=true	@station --security-trust /secrets/ca.pem --roles viewer	interrogate @scada --security-trust /secrets/ca.pem
+secure.command-type-c-sc-na-1-ioa-500-value-false-scada-trust-ca	1	ok=false error=negative-confirmation conf=17n term=false asdus=C_SC_NA_1/17 secured=true	@station --security-trust /secrets/ca.pem --roles viewer	command --type C_SC_NA_1 --ioa 500 --value false @scada --security-trust /secrets/ca.pem
+secure.command-type-c-sc-na-1-ioa-500-value-false-scada-trust-ca-2	0	ok=true error=- conf=7 term=true asdus=C_SC_NA_1/7,M_SP_TB_1/11,C_SC_NA_1/10 secured=true	@station --security-trust /secrets/ca.pem --roles viewer,operator	command --type C_SC_NA_1 --ioa 500 --value false @scada --security-trust /secrets/ca.pem
 # A station nobody trusts gets no association.
-1	ok=false error=security-failed conf= term=false asdus= secured=false	@station --security-trust /secrets/ca.pem	interrogate @rogue --security-trust /secrets/ca.pem --timeout-ms 2000
+secure.interrogate-rogue-trust-ca-timeout-ms-2000	1	ok=false error=security-failed conf= term=false asdus= secured=false	@station --security-trust /secrets/ca.pem	interrogate @rogue --security-trust /secrets/ca.pem --timeout-ms 2000
 # A controlling station that does not trust the station does not associate.
-1	ok=false error=security-failed conf= term=false asdus= secured=false	@station --security-trust /secrets/ca.pem	interrogate @scada --security-trust /secrets/pin-station.pem --timeout-ms 2000
+secure.interrogate-scada-trust-pin-station-timeout-ms-2000	1	ok=false error=security-failed conf= term=false asdus= secured=false	@station --security-trust /secrets/ca.pem	interrogate @scada --security-trust /secrets/pin-station.pem --timeout-ms 2000
 # A secure station answers nothing that is not secured.
-1	ok=false error=timeout conf= term=false asdus= secured=null	@station --security-trust /secrets/ca.pem	interrogate --timeout-ms 2000
+secure.interrogate-timeout-ms-2000	1	ok=false error=timeout conf= term=false asdus= secured=null	@station --security-trust /secrets/ca.pem	interrogate --timeout-ms 2000

@@ -8,8 +8,9 @@ Run the self-tests with REPORT_DIR set to keep every document:
     REPORT_DIR=reports make smoke interop
     python3 scripts/validate-documents.py reports
 
-A file with "roles" is a capability document, one with "operation" a client
-result. Needs the jsonschema package.
+A file with "repository" is an interop-result-v1 document (results.json), one
+with "roles" a capability document, one with "operation" a client result. Needs
+the jsonschema package.
 """
 
 import json
@@ -33,7 +34,8 @@ def main(argv):
         return 2
     capabilities = validator("capabilities.schema.json")
     result = validator("client-result.schema.json")
-    counts = {"capabilities": 0, "client results": 0}
+    interop = validator("interop-result-v1.schema.json")
+    counts = {"capabilities": 0, "client results": 0, "interop results": 0}
     failed = 0
     for path in sorted(Path(argv[0]).glob("*.json")):
         try:
@@ -42,7 +44,9 @@ def main(argv):
             print(f"FAIL {path.name}: not JSON: {e}")
             failed += 1
             continue
-        if "roles" in doc:
+        if "repository" in doc:
+            kind, v = "interop results", interop
+        elif "roles" in doc:
             kind, v = "capabilities", capabilities
         elif "operation" in doc:
             kind, v = "client results", result
@@ -55,7 +59,7 @@ def main(argv):
             where = "/".join(str(x) for x in e.absolute_path) or "(root)"
             print(f"FAIL {path.name}: {where}: {e.message}")
             failed += 1
-    print(f"{counts['capabilities']} capability documents, {counts['client results']} client results, {failed} errors")
+    print(f"{counts['capabilities']} capability documents, {counts['client results']} client results, {counts['interop results']} interop results, {failed} errors")
     if sum(counts.values()) == 0:
         print("no documents found", file=sys.stderr)
         return 1

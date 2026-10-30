@@ -58,6 +58,7 @@ ci: validate lint images documents ## Full local CI: validate, lint, build, smok
 validate: ## Validate every fixture against the schema and the cross-field rules; check versions.yaml and RELEASE.md
 	@scripts/check-versions.sh
 	@scripts/release-notes.sh > /dev/null && echo "ok   RELEASE.md has the notes of interop_version"
+	@python3 -m unittest discover -q -s scripts -p 'test_*.py'
 	@echo "Validating fixtures..."
 	@if python3 -c 'import jsonschema' 2>/dev/null; then \
 		python3 scripts/validate-fixtures.py --require-schema; \
