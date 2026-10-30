@@ -64,6 +64,8 @@ jobs:
 
       - name: Resolve the pin against upstream
         id: resolve
+        # bash: -eo pipefail, so a failing lookup fails this job too.
+        shell: bash
         run: scripts/latest-upstream.py "${{ matrix.component }}" | tee -a "$GITHUB_OUTPUT"
 
       - name: Build and self-test at the latest upstream
