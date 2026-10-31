@@ -9,3 +9,13 @@ reports/
 .vscode/
 .idea/
 .DS_Store
+
+# Build artefacts live in /bin/ and /release/ (otfabric/engineering REPO-005)
+/bin/
+/release/
+*.test
+coverage.out
+
+# Output of a bare `go build`, anchored so it can never hide a source folder
+/adapters/cbsigma/cbsigma
+/adapters/wendy512/wendy512
