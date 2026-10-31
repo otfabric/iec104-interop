@@ -24,6 +24,18 @@ Tags are immutable. A fix is a new version.
 
 ---
 
+## v0.4.0
+
+**Date:** 2026-10-31
+**Previous release:** v0.3.1
+
+### Added
+
+- Adds `results.json` in the interop-result-v1 format.
+- Policy 1.2: build output in `bin/` and `release/`, and shared CI at v3.3.0.
+
+---
+
 ## v0.3.1
 
 **Date:** 2026-10-26
