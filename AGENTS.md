@@ -2,7 +2,7 @@
 
 ## What this is
 
-Independent IEC 60870-5-104 client and server implementations (lib60870, OpenMUC j60870, wendy512/iec104, cB-Sigma/iec60870) in containers behind one command-line contract, with deterministic fixtures, used as oracles by go-iec104 and iec104ctl. Nothing here depends on go-iec104. Profile: **interoperability**.
+Independent IEC 60870-5-104 client and server implementations (lib60870, OpenMUC j60870, wendy512/iec104, cB-Sigma/iec60870) in containers behind one command-line contract, with deterministic fixtures, used as oracles by go-iec104 and iec104ctl. Nothing here depends on go-iec104, except `own/`, the one image of OT Fabric's own stack (`own/go-iec104/README.md`). Profile: **interoperability**.
 
 ## Organisation standards
 

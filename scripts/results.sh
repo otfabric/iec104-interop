@@ -9,6 +9,7 @@
 #   result <outcome> [<reason>] [<waiver id>]     one outcome of that scenario;
 #                                                 RESULT_FEATURE names its feature
 #   waiver <id> <scope> <evidence url> <true|false: it reproduced>
+#   implementation <name> <capability document>   what an image says of itself
 #   results_close                                 write results.json and judge
 #   results_abort                                 for the EXIT trap of a run
 #
@@ -50,6 +51,13 @@ waiver() {
     [[ -n "${RESULT_FILE}" ]] || return 0
     jq -cn --arg i "$1" --arg s "$2" --arg e "$3" --argjson r "$4" \
         '{kind: "waiver", id: $i, scope: $s, evidence: $e, reproduced: $r}' >> "${RESULT_FILE}"
+}
+
+implementation() {
+    [[ -n "${RESULT_FILE}" ]] || return 0
+    jq -c --arg n "$1" '{kind: "implementation", name: $n, version: .upstream.version, upstream: .upstream.name,
+        revision: .upstream.revision, license: .upstream.license, independent: .upstream.independentEngine}' "$2" \
+        >> "${RESULT_FILE}"
 }
 
 results_close() {

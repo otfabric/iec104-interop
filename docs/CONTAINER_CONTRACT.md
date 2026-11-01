@@ -38,7 +38,7 @@ What a *station* does with a request is defined by its fixture: see
 
 | Item | Value |
 |------|-------|
-| Image | `ghcr.io/otfabric/iec104-interop-<adapter>` |
+| Image | `ghcr.io/otfabric/iec104-interop-<adapter>`; OT Fabric's own stack is the adapter `otfabric` |
 | Entrypoint | `iec104-interop` (`/usr/local/bin/iec104-interop`) |
 | Default command | `server` |
 | Port | 2404/tcp |

@@ -27,6 +27,7 @@ Planned: Eclipse OneOFour (Java) and Fraunhofer iec104-python. See
   - [Table of contents](#table-of-contents)
   - [What this repository is, and is not](#what-this-repository-is-and-is-not)
   - [Quick start](#quick-start)
+  - [OT Fabric's own stack](#ot-fabrics-own-stack)
   - [Using the images from a library's tests](#using-the-images-from-a-librarys-tests)
   - [Repository layout](#repository-layout)
   - [Development](#development)
@@ -39,7 +40,8 @@ It owns the reference implementations, their adapters, the fixtures, the
 container contract, the images and the self-tests that show the references
 agree with each other.
 
-It does not contain, import, build or know about any library under test.
+It does not contain, import, build or know about any library under test, apart
+from [one image](#ot-fabrics-own-stack) kept out of its releases.
 [otfabric/go-iec104](https://github.com/otfabric/go-iec104) is a consumer: it
 pulls the images and owns its own scenarios, assertions and compatibility
 claims. A passing self-test here says the *references* interoperate; it says
@@ -94,6 +96,14 @@ client <operation>   connect, interrogate, counter-interrogate, read, clock-sync
 print-capabilities   what this adapter supports, as JSON
 print-fixture        the fixture baked into the image
 ```
+
+## OT Fabric's own stack
+
+`ghcr.io/otfabric/iec104-interop-otfabric` is go-iec104 behind the same contract, so
+you can test your stack against ours the way we test ours against yours. Despite
+the name it shares with the reference images, it is not an independent
+implementation and not part of a release of this repository, so its tags are
+go-iec104 versions and `manifest.json` does not list it: see [own/go-iec104/README.md](own/go-iec104/README.md).
 
 ## Using the images from a library's tests
 

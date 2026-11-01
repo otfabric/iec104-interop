@@ -13,7 +13,9 @@ next to the licence texts.
 | `adapters/openmuc/` (links j60870) | GPL-3.0-or-later |
 | `adapters/wendy512/` (links wendy512/iec104 and go-iecp5) | GPL-3.0-or-later |
 | `adapters/cbsigma/` (links cB-Sigma/iec60870 and the modules it needs) | GPL-3.0-or-later |
-| The published images | GPL-3.0 (they contain the libraries below) |
+| `own/go-iec104/` (links go-iec104) | MIT |
+| The published reference images | GPL-3.0 (they contain the libraries below) |
+| The image `iec104-interop-otfabric` | MIT and BSD-3-Clause, as listed below |
 
 The lib60870 and openmuc adapter programs are derivative works of GPL-3.0
 libraries. The wendy512 adapter links an Apache-2.0 and an LGPL-3.0 library,
@@ -24,6 +26,15 @@ under the same licence as the other two so that one licence covers
 `SPDX-License-Identifier: GPL-3.0-or-later`. Nothing in this repository is
 linked into a consumer: a library that tests against the images talks to them
 over TCP and reads their output, and is not affected by their licence.
+
+## Image `iec104-interop-otfabric`
+
+| Component | Version | Licence | Source |
+|-----------|---------|---------|--------|
+| go-iec104 | latest release when built | MIT | https://github.com/otfabric/go-iec104 |
+| Go standard library | 1.27.2 | BSD-3-Clause | https://go.dev |
+| Adapter | this repository, `own/go-iec104/` | MIT | https://github.com/otfabric/iec104-interop |
+| Base system | Debian trixie-slim | various; see `/usr/share/doc/*/copyright` in the image | https://www.debian.org |
 
 ## Image `iec104-interop-lib60870`
 

@@ -25,7 +25,12 @@ log()  { echo "[$(basename "$0" .sh)] $*" >&2; }
 ok()   { PASS=$((PASS + 1)); result pass; [[ -n "${VERBOSE:-}" ]] && log "ok: $*"; return 0; }
 fail() { FAIL=$((FAIL + 1)); result fail "$*"; log "FAIL: $*"; return 0; }
 
-image_of() { echo "${REGISTRY}/iec104-interop-$1:${VERSION}"; }
+# image_of <adapter>: ADAPTER_IMAGE_<adapter> names an image outside the release
+# set, which this repository's scripts know nothing about.
+image_of() {
+    local override="ADAPTER_IMAGE_$1"
+    if [[ -n "${!override:-}" ]]; then echo "${!override}"; else echo "${REGISTRY}/iec104-interop-$1:${VERSION}"; fi
+}
 
 require_tools() {
     local t
@@ -120,10 +125,11 @@ make_identities() {
 }
 
 # What two adapters must agree on: everything except who answered, how long it
-# took, the wall-clock time tags and the NOS of the last-section F_LS_NA_1
-# (LSQ 1 or 2), which the stacks fill differently (docs/FIXTURES.md).
+# took, the error message (for people, not part of the contract), the wall-clock
+# time tags and the NOS of the last-section F_LS_NA_1 (LSQ 1 or 2), which the
+# stacks fill differently (docs/FIXTURES.md).
 # shellcheck disable=SC2034
-NORMALIZE='del(.adapter, .elapsedMs) | (.asdus[]?.objects[]? |= del(.time))
+NORMALIZE='del(.adapter, .elapsedMs, .error.message) | (.asdus[]?.objects[]? |= del(.time))
     | (.asdus[]? |= if .type == "F_LS_NA_1" then (.objects[]? |= if .lsq == 1 or .lsq == 2 then del(.nos) else . end) else . end)'
 
 # One line that states the outcome of an operation; the expectation format of
