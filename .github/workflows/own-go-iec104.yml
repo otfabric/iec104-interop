@@ -10,8 +10,6 @@ run-name: "Build iec104-interop-otfabric from the latest go-iec104, by @${{ gith
 # The harness Release workflow and manifest.json do not contain this image.
 on:
   workflow_dispatch:
-  push:
-    branches: [feat/manual-own-image]
 
 permissions:
   contents: read
