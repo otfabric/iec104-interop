@@ -39,7 +39,7 @@ One JSON object on one line ([schema](../schemas/capabilities.schema.json)):
 | `adapterVersion` | Release of this repository the image was built from (`dev` for a local build) |
 | `upstream` | The implementation inside: name, exact version and revision, licence, language |
 | `upstream.engine` | Optional: the protocol engine (`name`, `version`, `license`) when the upstream is a layer over another project, as wendy512/iec104 is over go-iecp5 |
-| `upstream.independentEngine` | `false` when the adapter wraps the protocol engine of another adapter. Results from such an adapter do not count as an additional independent implementation |
+| `upstream.independentEngine` | `false` when the adapter wraps the protocol engine of another adapter, or is OT Fabric's own stack (`own/`). Results from such an adapter do not count as an additional independent implementation |
 | `roles` | Which of `server` and `client` the image provides |
 | `features` | See below; every value is a boolean |
 | `pointTypes` | Point types a fixture may use with this adapter |

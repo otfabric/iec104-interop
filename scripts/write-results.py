@@ -50,9 +50,12 @@ def load(directory):
     return records
 
 
-def implementation(name, pins, image):
-    pin = pins.get(name, {})
-    i = {"name": name, "version": pin.get("version") or pin.get("revision", "unknown")[:12], "independent": True}
+def implementation(name, pins, image, seen=None):
+    """seen is what the image said of itself; an image outside versions.yaml has only that."""
+    seen = (seen or {}).get(name, {})
+    pin = pins.get(name) or seen
+    i = {"name": name, "version": pin.get("version") or pin.get("revision", "unknown")[:12],
+         "independent": seen.get("independent", True)}
     for key in ("upstream", "revision", "license"):
         if pin.get(key):
             i[key] = pin[key]
@@ -63,13 +66,15 @@ def implementation(name, pins, image):
 
 
 def convert(records, pins, image=None):
-    results, waivers, runs = [], {}, []
+    results, waivers, runs, seen = [], {}, [], {}
     for r in records:
         if r["kind"] == "run":
             runs.append(r)
         elif r["kind"] == "waiver":
             w = waivers.setdefault(r["id"], {k: r[k] for k in ("id", "scope", "evidence")} | {"reproduced": False})
             w["reproduced"] = w["reproduced"] or r["reproduced"]
+        elif r["kind"] == "implementation":
+            seen[r["name"]] = r
         else:
             roles = {k: r[k] for k in ("client", "server") if r.get(k)} or {"harness": "selftest"}
             res = {"id": r["id"], "suite": r["id"].split(".")[0], "roles": roles, "outcome": r["outcome"],
@@ -87,13 +92,15 @@ def convert(records, pins, image=None):
             "gitSha": interop_result.git_sha(ROOT),
             "startedAt": min((r["startedAt"] for r in runs), default=interop_result.now()),
             "finishedAt": interop_result.now(), "host": interop_result.host(),
-            "implementations": [implementation(n, pins, image) for n in names] or [{"name": "none", "version": "none"}],
+            "implementations": [implementation(n, pins, image, seen) for n in names] or [{"name": "none", "version": "none"}],
             "waivers": list(waivers.values()),
             "reproduce": " && ".join(dict.fromkeys(r["reproduce"] for r in runs)) or "none", "results": results}
 
 
 def image_of(name):
     """The digest of the image the run used; a local build has none."""
+    if os.environ.get("ADAPTER_IMAGE_" + name):
+        return interop_result.repo_digest(os.environ["ADAPTER_IMAGE_" + name])
     template = os.environ.get("RESULT_IMAGE", "ghcr.io/otfabric/" + REPOSITORY.split("/")[1] + "-{}:" + os.environ.get("VERSION", "dev"))
     return interop_result.repo_digest(template.format(name))
 

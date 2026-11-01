@@ -50,6 +50,7 @@ for adapter in "${ADAPTERS[@]}"; do
     docker run --rm "$(image_of "${adapter}")" print-capabilities > "${WORK}/caps-${adapter}.json" 2>/dev/null
     version=$(jq -r '.upstream.version' "${WORK}/caps-${adapter}.json")
     log "${adapter}: upstream ${version}"
+    implementation "${adapter}" "${WORK}/caps-${adapter}.json"
     while IFS=$'\t' read -r bug_adapter bug_version bug_regex bug_text bug_id bug_url; do
         [[ -z "${bug_adapter}" || "${bug_adapter}" == \#* ]] && continue
         if [[ "${bug_adapter}" == "${adapter}" && "${bug_version}" == "${version}" ]]; then

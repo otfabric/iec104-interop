@@ -103,6 +103,21 @@ implementations:
     # Wraps lib60870-C: useful coverage, but not another protocol engine.
     independent_engine: false
 
+# OT Fabric's own stacks. Not independent implementations, not in a release of
+# this repository or its manifest.json: see own/<library>/README.md.
+own_implementations:
+  otfabric:
+    upstream: "go-iec104"
+    repository: "https://github.com/otfabric/go-iec104"
+    artifact: "go:github.com/otfabric/go-iec104"
+    version: "latest release, resolved when the image is built by hand"
+    license: "MIT"
+    language: "Go"
+    independent_engine: false
+    roles: [server, client]
+    image: "ghcr.io/otfabric/iec104-interop-otfabric"
+    build: "own/go-iec104"
+
 dependencies:
   gson: "2.14.0"               # openmuc adapter, Apache-2.0
   cjson: "debian trixie libcjson1"     # lib60870 adapter, MIT
