@@ -173,6 +173,7 @@ jobs:
           arg() { sed -nE "s/^ARG $2=(.*)$/\1/p" "$1" | head -1; }
           jq -n \
             --arg version "${VERSION}" \
+            --arg contract "$(sed -nE 's/^contract_version: "([^"]+)".*/\1/p' versions.yaml)" \
             --arg commit "${GITHUB_SHA}" \
             --arg lib_version "$(arg adapters/lib60870/Dockerfile LIB60870_VERSION)" \
             --arg lib_sha "$(arg adapters/lib60870/Dockerfile LIB60870_SHA)" \
@@ -187,7 +188,7 @@ jobs:
             '{
               version: $version,
               commit: $commit,
-              contract: "1.2",
+              contract: $contract,
               fixtureSchema: "1.0",
               platforms: ["linux/amd64", "linux/arm64"],
               upstream: {
