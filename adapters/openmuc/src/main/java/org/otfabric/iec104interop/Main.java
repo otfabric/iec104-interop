@@ -144,6 +144,8 @@ public final class Main {
         f.addProperty("multipleConnections", true);
         f.addProperty("pointQualityOnBitstring", true);
         f.addProperty("tls", true);
+        f.addProperty("tlsServer", true);
+        f.addProperty("tlsClient", true);
         // The server reports STARTDT and STOPDT as events.
         f.addProperty("dataTransferEvents", true);
         f.addProperty("fileTransfer", true);

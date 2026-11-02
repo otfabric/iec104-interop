@@ -438,7 +438,7 @@ final class ClientCommand implements ConnectionEventListener {
             throw new Failure("connection-lost", "the " + which + " closed");
         }
         if (!confirmed) {
-            throw new Failure("timeout", "no STOPDT con on the " + which);
+            throw new Failure("stopdt-timeout", "no STOPDT con on the " + which);
         }
     }
 

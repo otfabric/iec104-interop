@@ -115,11 +115,11 @@ func (g *redundancyGroup) report(r object) {
 	strays := g.strayCount()
 	g.ps.mu.Lock()
 	primary := g.ps.received
-	connected := g.ps.connected
+	connected := g.ps.connected || g.ps.tcpSeen
 	g.ps.mu.Unlock()
 	g.ss.mu.Lock()
 	defer g.ss.mu.Unlock()
-	r["connected"] = connected && g.ss.connected
+	r["connected"] = connected && (g.ss.connected || g.ss.tcpSeen)
 	r["confirmations"] = append(r["confirmations"].([]object), g.ss.confirmations...)
 	if g.ss.expectType != 0 {
 		r["terminated"] = g.ss.terminated

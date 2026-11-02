@@ -41,7 +41,7 @@ const usage = `usage: iec104-interop <command>
 
   server [--fixture PATH] [--bind-address ADDR] [--port N] [--ready-file PATH] [APCI]
   client <operation> --host HOST [--port N] [--common-address N] [--originator-address N]
-         [--timeout-ms N] [--connect-timeout-ms N] [--collect-ms N] [APCI] [operation flags]
+         [--timeout-ms N] [--connect-timeout-ms N] [--collect-ms N] [APCI] [TLS] [operation flags]
       connect             [--hold-ms N]
       interrogate         [--qoi N]
       counter-interrogate [--qcc N]
@@ -59,6 +59,7 @@ const usage = `usage: iec104-interop <command>
   version
 
   APCI: [--k N] [--w N] [--t0 S] [--t1 S] [--t2 S] [--t3 S]
+  TLS:  [--tls --tls-cert PATH --tls-key PATH --tls-trust PATH]
 
 See docs/CONTAINER_CONTRACT.md in https://github.com/otfabric/iec104-interop
 `
@@ -119,7 +120,10 @@ func printCapabilities() int {
 			"apciParameters":          true,
 			"multipleConnections":     true,
 			"pointQualityOnBitstring": true,
-			"tls":                     false,
+			// go-iecp5 dials TLS, but its server cannot listen with it.
+			"tls":       false,
+			"tlsServer": false,
+			"tlsClient": true,
 			// The server has no hook for STARTDT and STOPDT.
 			"dataTransferEvents": false,
 			// F_SG_NA_1 has no size in go-iecp5 and is dropped on reception, so

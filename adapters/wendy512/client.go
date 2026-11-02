@@ -37,6 +37,8 @@ type session struct {
 	asdus         []object
 	confirmations []object
 	connected     bool
+	tcpUp         chan struct{} // with TLS: closed when the handshake starts
+	tcpSeen       bool
 	started       bool
 	closed        bool
 	terminated    bool
@@ -82,6 +84,16 @@ func (s *session) waitFor(cond func() bool, timeout time.Duration) bool {
 			return cond()
 		}
 	}
+}
+
+// handshakeStarted records that the TCP connection of a TLS session is up.
+func (s *session) handshakeStarted() {
+	s.update(func() {
+		if !s.tcpSeen {
+			s.tcpSeen = true
+			close(s.tcpUp)
+		}
+	})
 }
 
 func (s *session) isClosed() bool {
@@ -382,23 +394,41 @@ func runClient(op string, a *args) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	tlsConfig, err := clientTLS(a)
+	if err != nil {
+		return 0, err
+	}
 	if err := a.finish("client " + op); err != nil {
 		return 0, err
 	}
-	// go-iecp5 dials with t0, which it wants between 1 and 255 seconds.
-	cfg.ConnectTimeout0 = min(max(connectTimeout, cs104.ConnectTimeout0Min), cs104.ConnectTimeout0Max)
+	// go-iecp5 dials with t0, which it wants between 1 and 255 seconds. With TLS
+	// that covers the handshake as well, so it must outlast both of the times
+	// the contract has; the adapter watches each itself.
+	dialTimeout := connectTimeout
+	scheme := "tcp://"
+	if tlsConfig != nil {
+		dialTimeout += timeout
+		scheme = "tls://"
+	}
+	cfg.ConnectTimeout0 = min(max(dialTimeout, cs104.ConnectTimeout0Min), cs104.ConnectTimeout0Max)
 
 	begin := time.Now()
-	s := &session{changed: make(chan struct{})}
+	newSession := func() *session { return &session{changed: make(chan struct{}), tcpUp: make(chan struct{})} }
+	s := newSession()
 	lib := newLibraryLog()
 	connectFailed := lib.seen("connect failed, %v")
 	params := *asdu.ParamsWide
 
 	opt := cs104.NewOption().SetConfig(cfg).SetParams(&params).SetAutoReconnect(false)
-	if err := opt.AddRemoteServer("tcp://" + net.JoinHostPort(host, strconv.Itoa(port))); err != nil {
+	if err := opt.AddRemoteServer(scheme + net.JoinHostPort(host, strconv.Itoa(port))); err != nil {
 		return 0, usagef("client: --host %s: %v", host, err)
 	}
 	newClient := func(s *session, lib *libraryLog) *cs104.Client {
+		if tlsConfig != nil {
+			own := tlsConfig.Clone()
+			own.ClientSessionCache = handshakeWatch{s.handshakeStarted}
+			opt.SetTLSConfig(own) // the client takes a copy of the options
+		}
 		c := cs104.NewClient(s, opt)
 		c.LogMode(true)
 		c.SetLogProvider(lib)
@@ -417,7 +447,8 @@ func runClient(op string, a *args) (int, error) {
 	// The standby of a redundancy operation.
 	var group *redundancyGroup
 	if op == "redundancy" {
-		ss := &session{changed: make(chan struct{}), also: s}
+		ss := newSession()
+		ss.also = s
 		slib := newLibraryLog()
 		group = &redundancyGroup{
 			switchover: switchover, primary: c, ps: s, plog: lib,
@@ -441,6 +472,28 @@ func runClient(op string, a *args) (int, error) {
 			s.waitFor(func() bool { return s.connected }, cfg.ConnectTimeout0+2*time.Second)
 			close(up)
 		}()
+		if tlsConfig != nil {
+			select {
+			case <-s.tcpUp:
+			case <-failed:
+			case <-time.After(connectTimeout):
+			}
+			select {
+			case <-s.tcpUp:
+			default:
+				exitCode = exitConnectFailed
+				return failf("connect-failed", "cannot connect to the station")
+			}
+			select {
+			case <-up:
+			case <-failed:
+			case <-time.After(timeout):
+			}
+			if !s.waitFor(func() bool { return s.connected }, 0) {
+				return failf("tls-failed", "no TLS session with the station")
+			}
+			return nil
+		}
 		select {
 		case <-up:
 		case <-failed:
@@ -463,6 +516,10 @@ func runClient(op string, a *args) (int, error) {
 		}
 		c.SendStartDt()
 		if !s.waitFor(func() bool { return s.started }, timeout) {
+			// With TLS 1.3 a client learns only here that its certificate was refused.
+			if tlsConfig != nil {
+				return failf("tls-failed", "no STARTDT con over the TLS session")
+			}
 			if s.isClosed() {
 				return failf("connection-lost", "connection closed while waiting for STARTDT con")
 			}
@@ -620,7 +677,10 @@ func runClient(op string, a *args) (int, error) {
 		r["error"] = object{"code": f.code, "message": f.message}
 	}
 	s.mu.Lock()
-	r["connected"] = s.connected
+	r["connected"] = s.connected || s.tcpSeen
+	if tlsConfig != nil {
+		r["tls"] = s.started
+	}
 	r["startdtConfirmed"] = s.started
 	if op == "connect" || op == "redundancy" {
 		r["stopdtConfirmed"] = stopdt
