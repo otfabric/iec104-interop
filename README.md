@@ -10,8 +10,8 @@ Test IEC 104 libraries against established implementations including MZ Automati
 | `wendy512` | [wendy512/iec104](https://github.com/wendy512/iec104) v1.0.4 on [go-iecp5](https://github.com/wendy512/go-iecp5) v1.2.6 | Go | yes | yes | `ghcr.io/otfabric/iec104-interop-wendy512` |
 | `cbsigma` | [cB-Sigma/iec60870](https://github.com/cB-Sigma/iec60870) v0.3.0 | Go | yes | yes | `ghcr.io/otfabric/iec104-interop-cbsigma` |
 
-The stacks do not all do the same: file transfer is served by lib60870 and
-cbsigma, wendy512 has no time-tagged commands, and only cbsigma has the
+The stacks do not all do the same: wendy512 has no time-tagged commands, cannot
+receive a file and has no TLS or redundancy as a station, and only cbsigma has the
 application-layer security of IEC 62351-5 (the A-Profile of
 IEC TS 60870-5-7), switched on with `--secure`. Each image says what it supports
 (`print-capabilities`); see [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
@@ -92,7 +92,8 @@ docker run --rm --add-host=host.docker.internal:host-gateway \
 ```text
 server               a controlled station serving a fixture
 client <operation>   connect, interrogate, counter-interrogate, read, clock-sync,
-                     test-command, command, monitor, file-get
+                     test-command, command, monitor, file-get, file-put, file-dir,
+                     redundancy
 print-capabilities   what this adapter supports, as JSON
 print-fixture        the fixture baked into the image
 ```
@@ -168,6 +169,7 @@ iec104-interop/
 │   └── baseline/        the baseline station
 ├── schemas/             JSON Schemas of the capability and client result documents, interop-result-v1
 ├── tests/cases.tsv      self-test cases: operation, expected outcome, features needed
+├── tests/feature-cases.tsv  self-test cases of groups, TLS, upload, directory, redundancy
 ├── tests/secure-cases.tsv  self-test cases of the security flags
 ├── tests/known-bugs.tsv bugs of upstream versions that are built as candidates
 ├── scripts/             validate, smoke, cross-stack self-test, upstream check

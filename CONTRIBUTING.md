@@ -48,7 +48,7 @@ Both architectures are built and self-tested natively, on an amd64 and an arm64 
 
 1. Specify it first: the operation, its flags, when it succeeds and its result fields in the contract; the station behaviour in [docs/FIXTURES.md](docs/FIXTURES.md).
 2. Implement it in every published adapter.
-3. Add cases to [tests/cases.tsv](tests/cases.tsv) (or, for the security flags, [tests/secure-cases.tsv](tests/secure-cases.tsv)) with the expected outcome, and a value check in `scripts/interop.sh` if the outcome line cannot show what matters.
+3. Add cases to [tests/cases.tsv](tests/cases.tsv) (for the security flags [tests/secure-cases.tsv](tests/secure-cases.tsv), for the features that need the fixture `extended` or their own server flags [tests/feature-cases.tsv](tests/feature-cases.tsv)) with the expected outcome, and a value check in `scripts/interop.sh` if the outcome line cannot show what matters.
 4. Add the feature to the capability documents and to [docs/CAPABILITIES.md](docs/CAPABILITIES.md) and [COVERAGE.md](COVERAGE.md).
 5. Extend the schemas in `schemas/` if documents gained fields.
 

@@ -75,34 +75,34 @@ did not reproduce", which is the signal to remove the entry.
 
 ## Cross-stack matrix
 
-`make interop` runs every case of [tests/cases.tsv](../tests/cases.tsv) in
-all sixteen pairings and requires, besides the expected outcome, that the
-result documents of all pairings are identical apart from time tags. A case
-that needs a feature a pairing does not declare is skipped for that pairing
-and counted as such.
+`make interop` runs every case of [tests/cases.tsv](../tests/cases.tsv) and
+[tests/feature-cases.tsv](../tests/feature-cases.tsv) in all sixteen pairings and
+requires, besides the expected outcome, that the result documents of all pairings
+are identical apart from time tags and the fields
+[listed below](#contract-13-and-the-stacks). A case that needs a feature a pairing
+does not declare is skipped for that pairing and counted as such.
 
 | Client → Server | lib60870 | openmuc | wendy512 | cbsigma |
 |-----------------|:--------:|:-------:|:--------:|:-------:|
-| **lib60870** | pass | pass ¹ ⁴ | pass ² | pass |
-| **openmuc** | pass ⁴ | pass ¹ ⁴ | pass ² ⁴ | pass ⁴ |
-| **wendy512** | pass ² | pass ¹ ² ⁴ | pass ² | pass ² |
-| **cbsigma** | pass | pass ¹ ⁴ | pass ² | pass ³ |
+| **lib60870** | pass | pass ³ | pass ¹ | pass |
+| **openmuc** | pass ³ | pass ³ | pass ¹ ³ | pass ³ |
+| **wendy512** | pass ¹ | pass ¹ ³ | pass ¹ | pass ¹ |
+| **cbsigma** | pass | pass ³ | pass ¹ | pass ² |
 
-¹ without file transfer: the openmuc server does not serve files.
-² without time-tagged commands and file transfer: see the
-[capabilities](CAPABILITIES.md#features) of wendy512.
-³ and the cases of [tests/secure-cases.tsv](../tests/secure-cases.tsv): the
+¹ without what wendy512 does not declare, as client or as station: time-tagged
+commands, downloading, taking an upload, and TLS and redundancy as a station. See
+the [capabilities](CAPABILITIES.md#features).
+² and the cases of [tests/secure-cases.tsv](../tests/secure-cases.tsv): the
 security flags, which only cbsigma has.
-⁴ except read: a known bug of j60870 1.8.0 (see
+³ except read: a known bug of j60870 1.8.0 (see
 [the finding](#j60870-180-cannot-receive-a-read-command)).
 
-Verified on linux/arm64 with the pins above on 2026-10-26: 39 cases, the
-value checks and the session checks over 16 pairings, and the 10 secure
-cases for cbsigma against itself; 1195 checks, of which 1172 passed and 23
-were the known read bug of j60870 1.8.0, none failed, and 88 were skipped for
-a capability that is not declared. On j60870 1.7.2 (v0.3.0) the same run had
-1223 checks, all passed: an operation a known bug may affect is not compared
-across pairings, so the known-bug entry removes 28 agreement checks.
+Verified on linux/amd64 and linux/arm64 with the pins above on 2026-11-02, by CI: 39
+cases and 29 feature cases, the value checks and the session checks over 16 pairings,
+and the 10 secure cases for cbsigma against itself; 2188 checks, of which 2153 passed
+and 35 were the known read bug of j60870 1.8.0, none failed, and 262 were skipped for
+a capability that is not declared. With the own image as a fifth stack, on linux/arm64
+locally: 3596 checks, of which 3552 passed and 44 were that bug, none failed, 351 skipped.
 
 Covered by every pairing: STARTDT/STOPDT; general interrogation (station, broadcast address,
 unknown station, unsupported group); counter interrogation; read of a
@@ -118,8 +118,12 @@ with time tag only where footnote 2 does not apply.)
 
 Covered where declared: the download of a one-section and of a three-section
 file with the content and the SHA-256 the fixture defines, and the refusal of
-an unknown file address and of a wrong file name. Clients lib60870 and
-openmuc, server lib60870.
+an unknown file address and of a wrong file name. Interrogation groups and a
+quality on a bitstring; mutual TLS, and its refusal of a certificate from another
+authority, either way, and of a station without TLS; the upload of three sizes with
+the event, a read-back and the directory afterwards, and four refusals; the directory;
+a redundancy switchover by STOPDT and by takeover.
+
 
 ## Findings
 
@@ -167,10 +171,23 @@ reports it as one object with only `ioa`, like lib60870 does.
 `--t3` below `--t1` as a usage error rather than run with another value than
 the one asked for.
 
-### lib60870 cannot set a quality on a bitstring
+### lib60870: TLS, files and redundancy in v2.4.1
 
-`BitString32_create` takes no quality descriptor. The fixture format does not
-allow one on `M_BO_NA_1` for any adapter.
+- **`BitString32_create` takes no quality descriptor.** `BitString32_createEx` does;
+  the fixture `extended` has a quality on `M_BO_NA_1` and the adapter uses it.
+- **Minimum key length.** The default of `TLSConfiguration` is 1024 bits, which
+  refuses P-256 keys; the adapter sets 256. The self pairing negotiates TLS 1.3, and
+  TLS 1.2 was checked against OpenSSL.
+- **Handshakes have no timeout.** The client's in `TLSSocket_create`, which the
+  adapter wraps with `--wrap` to keep the contract's bound; the server's runs in
+  the accept thread (`cs104_slave.c:4026`), so a silent client holds up other
+  connections.
+- **Takeover closes the old connection** (`cs104_slave.c:1683-1703`) without
+  a deactivation callback.
+- **The file server** swallows a directory call (`file_server.c:851-856`), so
+  a plugin in front of it answers; it does not check an upload's checksum
+  (`file_server.c:439`, `:466`), which the adapter's plugin does; a whole transfer has a timeout of 3000 ms (`:924`).
+- **The client delivers I frames regardless of its state**, also after STOPDT.
 
 ### go-iecp5 drops types it has no length for
 
@@ -187,7 +204,7 @@ Effect: a go-iecp5 station does not answer a time-tagged command at all (the
 other stacks confirm it, and would answer a type they do not know with cause
 44), and a go-iecp5 controlling station can send one but never sees the
 confirmation. It cannot receive a file either. The adapter declares
-`timeTaggedCommands`, `fileTransfer`, `fileServer` and `fileClient` false,
+`timeTaggedCommands`, `fileTransfer`, `fileClient` and `fileUploadServer` false,
 and [tests/cases.tsv](../tests/cases.tsv) has every time-tagged command case
 a second time without time tag, so that the qualifier, the set points and
 select-and-execute are still covered in every pairing.
@@ -313,6 +330,41 @@ What the cbsigma adapter met, and how it deals with it:
   the acknowledgement of a download, to the FileWrite permission, so with
   `--roles viewer` a download is likely refused at its end. The secure
   cases do not download files.
+
+### Contract 1.3 and the stacks
+
+What the adapters met when they got groups, TLS, upload, directory and
+redundancy, none of it a failure of a comparison.
+
+- **j60870 1.8.0.** No listener is called after `stopDataTransfer`; a server in
+  STOPDT closes on an I or S frame (`Connection.java:341-345`); the TLS handshake
+  happens on first use, so the adapter forces it; `needClientAuth` takes a wrapper
+  around the socket factory; the STARTDT confirmation is buffered (`:388`) before
+  its callback (`:393`) and flush (`:395`), so an adapter must not send from there.
+- **go-iecp5 v1.2.6.** The random `select` in `handlerLoop` loses the last ASDU
+  when the peer closes (`cs104/server_session.go:336-339`), so the adapter reads
+  a file's last acknowledgement from the `RX Raw` log line. I frames received in
+  STOPDT are dropped (`cs104/client.go:372-376`). `asdu/filet.go` is a TODO.
+  A takeover's strays are counted from the STARTDT act.
+  The TCP connect and the TLS handshake of its client are one call under t0 that says
+  nothing until both are over; the adapter learns that TCP is up from a
+  `tls.Config.ClientSessionCache` whose `Get` always misses, so the ClientHello
+  advertises session tickets that are never used.
+- **cB-Sigma/iec60870 v0.3.0.** `cs104.Group` closes stopped connections before the
+  STARTDT confirmation (`group.go:123-131`) and resends answers on reclaim
+  (`:140-157`), neither of which fits the contract, so the adapter drives
+  `cs104.Accept` with a group of its own. `FileServer` accepts any F_FR.
+  `PutFile` has a fixed section size and sends a deactivation after a refusal. A
+  client link closes on a stray with `ErrFrame`; a TLS connection counts as opened after
+  the handshake. A negative F_AF_NA_1 carries the error in the high four bits
+  (0x24, 0x22), which the contract allows.
+- **F_AF_NA_1 and F_DR_TA_1 fields.** NOS of the file acknowledgement differs
+  between stacks, and the sequence and time-invalid bits of F_DR_TA_1 are not
+  the same either, so the agreement check does not compare those (`NORMALIZE` in
+  `scripts/lib.sh`).
+- **Takeover.** What happens to the connection taken over is left to the stack and not
+  compared. So is the error code of a client that does not reach a station
+  over TLS: every case checks no STARTDT confirmation and no ASDU instead.
 
 ## Platforms
 
