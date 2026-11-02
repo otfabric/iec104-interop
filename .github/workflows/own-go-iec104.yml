@@ -124,6 +124,7 @@ jobs:
 
       - name: Smoke, cross-stack self-test against the references, document schemas
         run: |
+          set -o pipefail
           mkdir -p reports
           REPORT_DIR=reports scripts/smoke.sh otfabric
           REPORT_DIR=reports scripts/interop.sh otfabric lib60870 openmuc wendy512 cbsigma 2>&1 | tee reports/interop.log
