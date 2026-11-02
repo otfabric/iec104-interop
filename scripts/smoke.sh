@@ -67,6 +67,8 @@ expect_exit 2 "server with an unknown flag" "${IMAGE}" server --frobnicate
 expect_exit 2 "file-put without --size" "${IMAGE}" client file-put --host nowhere --ioa 31000
 expect_exit 2 "file-put without --ioa" "${IMAGE}" client file-put --host nowhere --size 100
 expect_exit 2 "file-put with a section larger than the file" "${IMAGE}" client file-put --host nowhere --ioa 31000 --size 100 --section-size 101
+expect_exit 2 "file-put with more sections than NOS can name" "${IMAGE}" client file-put --host nowhere --ioa 31000 --size 256 --section-size 1
+expect_exit 2 "redundancy with an unknown switchover" "${IMAGE}" client redundancy --host nowhere --switchover sideways
 expect_exit 2 "file-dir with a flag it does not have" "${IMAGE}" client file-dir --host nowhere --ioa 1
 expect_exit 2 "server with invalid APCI parameters" "${IMAGE}" server --k 4 --w 9
 # A security flag is unknown to an image without secureAuthentication; for
@@ -202,6 +204,21 @@ if jq -e '.features.tlsServer == true or .features.tlsClient == true' <<<"${caps
     else
         fail "cannot make key material with openssl"
     fi
+fi
+# The features must say the same as "tls".
+if jq -e '.features.tls == (.features.tlsServer and .features.tlsClient)' <<<"${caps}" >/dev/null 2>&1
+then ok "tls is tlsServer and tlsClient"; else fail "tls does not agree with tlsServer and tlsClient"; fi
+
+# ---- redundancy: the ready event, or an unknown flag ----
+if jq -e '.features.redundancyServer == true' <<<"${caps}" >/dev/null 2>&1; then
+    name=$(start_server "${ADAPTER}" --redundancy-group)
+    if wait_ready "${name}"; then ok "server with a redundancy group becomes ready"; else fail "server with a redundancy group did not become ready"; fi
+    first=$(docker logs "${name}" 2>/dev/null | head -1)
+    if jq -e '.event == "ready" and .redundancyGroup == true' <<<"${first}" >/dev/null 2>&1
+    then ok "ready event of a redundancy group"; else fail "ready event without redundancyGroup: ${first}"; fi
+    stop_server "${name}"
+else
+    expect_exit 2 "server --redundancy-group without the feature" "${IMAGE}" server --redundancy-group
 fi
 
 # ---- a port that is already taken ----

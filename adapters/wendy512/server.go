@@ -66,6 +66,7 @@ func runServer(a *args) (int, error) {
 	params := *asdu.ParamsWide // time tags are UTC on the wire
 	st := &station{fx: fx, ca: asdu.CommonAddr(fx.Station.CommonAddr), params: &params, transfers: map[transferKey]*transfer{}}
 	lib := newLibraryLog()
+	lib.rawFrame = st.noteFrame
 	listening, failed := lib.seen("server run"), lib.seen("server run failed, %v")
 
 	srv := server.New(&server.Settings{

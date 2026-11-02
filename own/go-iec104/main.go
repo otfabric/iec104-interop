@@ -165,17 +165,19 @@ func capabilities() object {
 			"fileDirectoryServer":     true,
 			"fileDirectoryClient":     true,
 			"secureAuthentication":    true,
+			"redundancyServer":        true,
+			"redundancyClient":        true,
 		},
 		"pointTypes": []string{"M_SP_NA_1", "M_DP_NA_1", "M_ST_NA_1", "M_BO_NA_1", "M_ME_NA_1", "M_ME_NB_1",
 			"M_ME_NC_1", "M_IT_NA_1"},
 		"commandTypes": []string{"C_SC_NA_1", "C_DC_NA_1", "C_RC_NA_1", "C_SE_NA_1", "C_SE_NB_1", "C_SE_NC_1"},
 		"clientOperations": []string{"connect", "interrogate", "counter-interrogate", "read", "clock-sync",
-			"test-command", "command", "monitor", "file-get", "file-put", "file-dir"},
+			"test-command", "command", "monitor", "file-get", "file-put", "file-dir", "redundancy"},
 	}
 }
 
 // switches take no value; every other flag does.
-var switches = map[string]bool{"secure": true, "tls": true, "with-time": true}
+var switches = map[string]bool{"secure": true, "tls": true, "with-time": true, "redundancy-group": true}
 
 // flags holds the flags of a command. A command takes what it needs and finish
 // refuses the rest: an unknown flag is a usage error, never ignored.

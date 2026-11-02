@@ -36,6 +36,7 @@ type station struct {
 	files   map[int]*iec.FileServer // by information object address
 	uploads map[int]*upload         // by information object address
 	dir     *iec.FileServer         // the call of the directory
+	group   *redundancyGroup        // with --redundancy-group
 }
 
 // conn is one connection: its link and, with --secure, its association.
@@ -54,6 +55,7 @@ func runServer(a *args) (int, error) {
 	fixturePath := a.str("--fixture", defaultFixture)
 	bind := a.str("--bind-address", "0.0.0.0")
 	readyFile := a.str("--ready-file", defaultReadyFile)
+	grouped := a.flag("--redundancy-group")
 	port, err := a.num("--port", 2404)
 	if err != nil {
 		return 0, err
@@ -93,6 +95,9 @@ func runServer(a *args) (int, error) {
 		st.files[f.IOA] = st.fileServer(f)
 	}
 	st.dir = &iec.FileServer{Store: stationFiles{st}}
+	if grouped {
+		st.group = &redundancyGroup{}
+	}
 	for _, u := range fx.Uploads {
 		st.uploads[u.IOA] = &upload{spec: u, srv: &iec.FileServer{Store: stationFiles{st}, SegmentSize: 236}}
 	}
@@ -104,6 +109,15 @@ func runServer(a *args) (int, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	// The connections of a redundancy group are one association (TS 7.3.2).
+	var groupLink *sec.SecureLink
+	if grouped && security != nil {
+		if groupLink, err = security.link(false, st.ca); err != nil {
+			logf("security: %v", err)
+			return exitOperationFailed, nil
+		}
+		go groupLink.Run(ctx)
+	}
 
 	var (
 		mu       sync.Mutex
@@ -116,11 +130,14 @@ func runServer(a *args) (int, error) {
 		c := &conn{peer: nc.RemoteAddr().String()}
 		lcfg := cfg
 		if security != nil {
-			var err error
-			if c.sl, err = security.link(false, st.ca); err != nil {
-				logf("security: %v", err)
-				_ = nc.Close()
-				return
+			c.sl = groupLink
+			if c.sl == nil {
+				var err error
+				if c.sl, err = security.link(false, st.ca); err != nil {
+					logf("security: %v", err)
+					_ = nc.Close()
+					return
+				}
 			}
 			lcfg.Security = c.sl
 		}
@@ -135,7 +152,7 @@ func runServer(a *args) (int, error) {
 		wg.Add(1)
 		mu.Unlock()
 		cctx, ccancel := context.WithCancel(ctx)
-		if c.sl != nil {
+		if c.sl != nil && groupLink == nil {
 			go c.sl.Run(cctx)
 		}
 		e := event("connection-opened")
@@ -203,6 +220,9 @@ func runServer(a *args) (int, error) {
 	if tlsConfig != nil {
 		ready["tls"] = true
 	}
+	if grouped {
+		ready["redundancyGroup"] = true
+	}
 	emit(ready)
 
 	select {
@@ -235,6 +255,7 @@ func (s *station) started(c *conn, l *cs104.Link) {
 	e := event("data-transfer-started")
 	e["peer"] = c.peer
 	emit(e)
+	s.linkStarted(l)
 	c.watch.Add(1)
 	go func() {
 		defer c.watch.Done()
@@ -244,6 +265,7 @@ func (s *station) started(c *conn, l *cs104.Link) {
 			// A link that ends stays "started"; one stopped just before
 			// it ended is still reported.
 			if !l.Started() {
+				s.linkStopped(l)
 				e := event("data-transfer-stopped")
 				e["peer"] = c.peer
 				emit(e)

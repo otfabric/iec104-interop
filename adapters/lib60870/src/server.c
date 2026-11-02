@@ -61,11 +61,42 @@ static bool connectionRequestHandler(void* parameter, const char* ipAddress)
 
 static void abandonUpload(IMasterConnection connection);
 
+/* NULL without --redundancy-group. */
+static CS104_Slave redundancyGroup;
+
+/*
+ * lib60870 keeps one queue for a redundancy group, and the next connection to
+ * start sends it, after its STARTDT con. So the event only has to go in there.
+ * It says "deactivated" for a STOPDT act only: not for a takeover and not for a
+ * connection that ends (iec60870/cs104/cs104_slave.c: MasterConnection_deactivate).
+ * That holds the lock of the connection, and enqueueing does not need it.
+ */
+static void queueEvent(void)
+{
+    pthread_mutex_lock(&stateLock);
+    for (int i = 0; i < fx.pointCount; i++) {
+        const Point* p = &fx.points[i];
+        if (p->type != M_SP_NA_1)
+            continue;
+        CS101_ASDU a = CS101_ASDU_create(CS104_Slave_getAppLayerParameters(redundancyGroup), false,
+            CS101_COT_SPONTANEOUS, 0, fx.commonAddress, false, false);
+        InformationObject io = pointToObject(p, NULL);
+        CS101_ASDU_addInformationObject(a, io);
+        InformationObject_destroy(io);
+        CS104_Slave_enqueueASDU(redundancyGroup, a);
+        CS101_ASDU_destroy(a);
+        break;
+    }
+    pthread_mutex_unlock(&stateLock);
+}
+
 static void connectionEventHandler(void* parameter, IMasterConnection connection, CS104_PeerConnectionEvent ev)
 {
     (void)parameter;
     if (ev == CS104_CON_EVENT_CONNECTION_CLOSED)
         abandonUpload(connection);
+    if (ev == CS104_CON_EVENT_DEACTIVATED && redundancyGroup != NULL)
+        queueEvent();
     static const char* names[] = { "connection-opened", "connection-closed", "data-transfer-started",
         "data-transfer-stopped" };
     if ((int)ev < 0 || (int)ev > 3)
@@ -761,6 +792,7 @@ int runServer(Args* args)
     if (!tlsFromArgs(args, &tls))
         return EXIT_USAGE;
 
+    bool group = argFlag(args, "--redundancy-group");
     CS104_Slave slave = tls ? CS104_Slave_createSecure(1024, 1024, tls) : CS104_Slave_create(1024, 1024);
     if (!applyApciArgs(args, CS104_Slave_getConnectionParameters(slave)))
         return EXIT_USAGE;
@@ -778,8 +810,10 @@ int runServer(Args* args)
 
     CS104_Slave_setLocalAddress(slave, bindAddress);
     CS104_Slave_setLocalPort(slave, port);
-    /* Every connection is its own redundancy group: independent sessions. */
-    CS104_Slave_setServerMode(slave, CS104_MODE_CONNECTION_IS_REDUNDANCY_GROUP);
+    /* Without --redundancy-group, every connection is its own redundancy group:
+     * independent sessions. */
+    CS104_Slave_setServerMode(slave, group ? CS104_MODE_SINGLE_REDUNDANCY_GROUP : CS104_MODE_CONNECTION_IS_REDUNDANCY_GROUP);
+    redundancyGroup = group ? slave : NULL;
     CS104_Slave_setMaxOpenConnections(slave, 16);
     CS104_Slave_setAllowedCAHandler(slave, isCAAllowed, NULL);
     CS104_Slave_setConnectionRequestHandler(slave, connectionRequestHandler, NULL);
@@ -829,6 +863,8 @@ int runServer(Args* args)
     cJSON_AddNumberToObject(e, "commonAddress", fx.commonAddress);
     if (tls)
         cJSON_AddTrueToObject(e, "tls");
+    if (group)
+        cJSON_AddTrueToObject(e, "redundancyGroup");
     emitJson(e);
 
     while (running && CS104_Slave_isRunning(slave))

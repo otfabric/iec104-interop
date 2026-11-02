@@ -395,6 +395,24 @@ for server in "${ADAPTERS[@]}"; do
     done
 done
 
+# ---- values: the queued event of a redundancy group ----
+for server in "${ADAPTERS[@]}"; do
+    has "${server}" redundancyServer || continue
+    for client in "${ADAPTERS[@]}"; do
+        pair="${client}->${server}"
+        at values.redundancy-event "${client}" "${server}"
+        supported "${client}" "${server}" "server:redundancyServer,client:redundancyClient" || { skip "${pair}: redundancy"; continue; }
+        name=$(feature_server rw "${server}" "$(feature_flags "@ext --redundancy-group")") || { fail "${pair}: the server did not start"; continue; }
+        # The event carries the state of the station, so change it first.
+        run_client "${client}" command --type C_SC_NA_1 --ioa 500 --value false --host "${name}" >/dev/null
+        got=$(run_client "${client}" redundancy --host "${name}" | jq -c '[.asdus[] | select(.cot == 3) | {type, ioa: .objects[0].ioa, value: .objects[0].value, quality: .objects[0].quality, originator}]')
+        # The command's connection stopped too, by closing; only STOPDT queues.
+        if [[ "${got}" == '[{"type":"M_SP_NA_1","ioa":100,"value":false,"quality":[],"originator":0}]' ]]; then ok "${pair}: the event has the current value, once"
+        else fail "${pair}: the queued event is ${got}"; fi
+        stop_server "${name}"
+    done
+done
+
 # ---- tls: a client without TLS gets nothing from a station with it ----
 for server in "${ADAPTERS[@]}"; do
     has "${server}" tlsServer || continue

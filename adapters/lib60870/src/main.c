@@ -22,6 +22,7 @@ static const char USAGE[] =
     "      file-get            --ioa N [--name N]\n"
     "      file-put            --ioa N --size N [--name N] [--section-size N]\n"
     "      file-dir\n"
+    "      redundancy          [--switchover stopdt|takeover]\n"
     "  print-capabilities\n"
     "  print-fixture [NAME]\n"
     "  version\n"
@@ -38,7 +39,7 @@ int printCapabilities(void)
     static const char* commandTypes[] = { "C_SC_NA_1", "C_DC_NA_1", "C_RC_NA_1", "C_SE_NA_1", "C_SE_NB_1",
         "C_SE_NC_1" };
     static const char* operations[] = { "connect", "interrogate", "counter-interrogate", "read", "clock-sync",
-        "test-command", "command", "monitor", "file-get", "file-put", "file-dir" };
+        "test-command", "command", "monitor", "file-get", "file-put", "file-dir", "redundancy" };
 
     cJSON* c = cJSON_CreateObject();
     cJSON_AddStringToObject(c, "schemaVersion", SCHEMA_VERSION);
@@ -85,6 +86,8 @@ int printCapabilities(void)
     cJSON_AddTrueToObject(f, "fileUploadClient");
     cJSON_AddTrueToObject(f, "fileDirectoryServer");
     cJSON_AddTrueToObject(f, "fileDirectoryClient");
+    cJSON_AddTrueToObject(f, "redundancyServer");
+    cJSON_AddTrueToObject(f, "redundancyClient");
     cJSON_AddFalseToObject(f, "secureAuthentication");
 
     cJSON_AddItemToObject(c, "pointTypes", cJSON_CreateStringArray(pointTypes, 8));

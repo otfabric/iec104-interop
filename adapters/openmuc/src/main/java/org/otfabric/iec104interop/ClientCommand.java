@@ -12,6 +12,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.BooleanSupplier;
 
+import javax.net.SocketFactory;
+
 import org.openmuc.j60870.ASdu;
 import org.openmuc.j60870.ASduType;
 import org.openmuc.j60870.CauseOfTransmission;
@@ -63,9 +65,10 @@ final class ClientCommand implements ConnectionEventListener {
     }
 
     // Shared with the receive thread; guarded by this.
-    private final JsonArray asdus = new JsonArray();
+    private final JsonArray asdus;
     private final JsonArray confirmations = new JsonArray();
     private int asduCount;
+    private int spontaneous;
     private boolean closed;
     private boolean terminated;
     private int negativeCot;
@@ -76,15 +79,25 @@ final class ClientCommand implements ConnectionEventListener {
     /** File transfer ASDUs, for the file operation. */
     private final java.util.ArrayDeque<ASdu> fileEvents = new java.util.ArrayDeque<>();
 
+    /** asdus: where to record what arrives; the two connections of the redundancy operation share it. */
+    private ClientCommand(JsonArray asdus) {
+        this.asdus = asdus;
+    }
+
     @Override
     public synchronized void newASdu(Connection connection, ASdu asdu) {
-        asdus.add(Codec.asduJson(asdu));
+        synchronized (asdus) {
+            asdus.add(Codec.asduJson(asdu));
+        }
         asduCount++;
         ASduType type = asdu.getTypeIdentification();
         if (type != null && type.getId() >= 120 && type.getId() <= 126) {
             fileEvents.add(asdu);
         }
         int cot = asdu.getCauseOfTransmission().getId();
+        if (cot == 3) {
+            spontaneous++;
+        }
         if (expectType != null && type == expectType) {
             boolean unknown = cot >= 44 && cot <= 47;
             if (cot == 7 || cot == 9 || unknown) {
@@ -376,6 +389,90 @@ final class ClientCommand implements ConnectionEventListener {
         }
     }
 
+    private void interrogateStation(Connection c, int ca, int timeoutMs) throws Failure, IOException {
+        expect(ASduType.C_IC_NA_1);
+        c.interrogation(ca, CauseOfTransmission.ACTIVATION, new IeQualifierOfInterrogation(20));
+        awaitConfirmation(1, timeoutMs);
+        awaitTermination(timeoutMs);
+    }
+
+    /** What the redundancy operation found, for the result document. */
+    private static final class Redundancy {
+        final boolean takeover;
+        ApduTap primaryTap;
+        ApduTap standbyTap;
+        ClientCommand standby;
+        Connection standbyConnection;
+        /** Takeover: the I frames of the primary when the standby's STARTDT con arrived; before that, -1. */
+        int primaryEnd = -1;
+        boolean secondInterrogation;
+        boolean queuedEvent;
+
+        Redundancy(boolean takeover) {
+            this.takeover = takeover;
+        }
+
+        int primaryAsdus() {
+            return primaryTap == null ? 0 : primaryTap.startedFrames(primaryEnd);
+        }
+
+        int standbyAsdus() {
+            return standbyTap == null ? 0 : standbyTap.startedFrames(-1);
+        }
+
+        int strays() {
+            int all = (primaryTap == null ? 0 : primaryTap.frames()) + (standbyTap == null ? 0 : standbyTap.frames());
+            return all - primaryAsdus() - standbyAsdus();
+        }
+    }
+
+    /** Stops data transfer on a connection, as a step of the redundancy operation. */
+    private void stop(ExecutorService exec, Connection c, int timeoutMs, String which) throws Failure, IOException {
+        boolean confirmed;
+        try {
+            confirmed = uFrame(exec, c::stopDataTransfer, timeoutMs);
+        } catch (IOException | RuntimeException e) {
+            confirmed = false;
+        }
+        if (isClosed()) {
+            throw new Failure("connection-lost", "the " + which + " closed");
+        }
+        if (!confirmed) {
+            throw new Failure("timeout", "no STOPDT con on the " + which);
+        }
+    }
+
+    /** Steps 2 to 7 of the redundancy operation, on the primary: see docs/CONTAINER_CONTRACT.md. */
+    private void redundancy(ExecutorService exec, Connection c, Redundancy rd, int ca, boolean tls, int timeoutMs)
+            throws Failure, IOException {
+        ClientCommand standby = rd.standby;
+        interrogateStation(c, ca, timeoutMs);
+        if (!rd.takeover) {
+            stop(exec, c, timeoutMs, "primary");
+        }
+        start(exec, rd.standbyConnection, standby, tls, timeoutMs);
+        if (rd.takeover) {
+            rd.primaryEnd = rd.primaryTap.frames();
+        } else if (isClosed()) {
+            throw new Failure("connection-lost", "the primary closed");
+        }
+        if (!rd.takeover) {
+            if (!standby.waitFor(() -> standby.spontaneous > 0, timeoutMs)) {
+                if (standby.isClosed()) {
+                    throw new Failure("connection-lost", "the standby closed while waiting for the queued event");
+                }
+                throw new Failure("timeout", "no event with cause 3 on the standby");
+            }
+            rd.queuedEvent = true;
+        }
+        rd.secondInterrogation = true;
+        standby.interrogateStation(rd.standbyConnection, ca, timeoutMs);
+        standby.stop(exec, rd.standbyConnection, timeoutMs, "standby");
+        if (rd.strays() > 0) {
+            throw new Failure("failed", rd.strays() + " I frames on a connection outside the time it was started");
+        }
+    }
+
     private static boolean parseBool(String s) {
         switch (s.toLowerCase()) {
         case "true":
@@ -529,6 +626,7 @@ final class ClientCommand implements ConnectionEventListener {
         int sectionSize = 0;
         Download download = new Download();
         JsonArray directory = new JsonArray();
+        Redundancy redundancy = null;
         switch (op) {
         case "connect":
             holdMs = args.integer("--hold-ms", 0);
@@ -586,6 +684,14 @@ final class ClientCommand implements ConnectionEventListener {
             break;
         case "file-dir":
             break;
+        case "redundancy": {
+            String switchover = args.string("--switchover", "stopdt");
+            if (!switchover.equals("stopdt") && !switchover.equals("takeover")) {
+                throw new Args.UsageException("redundancy: --switchover must be stopdt or takeover");
+            }
+            redundancy = new Redundancy(switchover.equals("takeover"));
+            break;
+        }
         case "monitor":
             durationMs = args.integer("--duration-ms", 1000);
             maxAsdus = args.integer("--max-asdus", 0);
@@ -597,7 +703,7 @@ final class ClientCommand implements ConnectionEventListener {
         Tls tls = Tls.fromArgs(args);
         args.finish("client " + op);
 
-        ClientCommand state = new ClientCommand();
+        ClientCommand state = new ClientCommand(new JsonArray());
         long begin = System.currentTimeMillis();
         boolean connected = false;
         boolean startdt = false;
@@ -622,10 +728,21 @@ final class ClientCommand implements ConnectionEventListener {
                         .setMaxTimeNoAckSent(apci.t2 * 1000)
                         .setMaxIdleTime(apci.t3 * 1000)
                         .setConnectionEventListener(state);
-                if (tls != null) {
-                    builder.setSocketFactory(tls.clientFactory());
+                SocketFactory transport = tls != null ? tls.clientFactory() : SocketFactory.getDefault();
+                builder.setSocketFactory(transport);
+                if (redundancy != null) {
+                    redundancy.primaryTap = new ApduTap(transport);
+                    redundancy.standbyTap = new ApduTap(transport);
+                    redundancy.standby = new ClientCommand(state.asdus);
+                    builder.setSocketFactory(redundancy.primaryTap);
                 }
                 con = builder.build();
+                if (redundancy != null) {
+                    redundancy.standbyConnection = builder.setSocketFactory(redundancy.standbyTap)
+                            .setConnectionEventListener(redundancy.standby)
+                            .build();
+                    redundancy.standbyConnection.setOriginatorAddress(oa);
+                }
             } catch (IOException e) {
                 exitCode = Main.EXIT_CONNECT_FAILED;
                 throw new Failure("connect-failed", "cannot connect to the station: " + e.getMessage());
@@ -718,6 +835,10 @@ final class ClientCommand implements ConnectionEventListener {
             case "file-dir":
                 state.directory(c, ca, timeoutMs, directory);
                 break;
+            case "redundancy":
+                state.redundancy(exec, c, redundancy, ca, tls != null, timeoutMs);
+                stopdt = true;
+                break;
             default: // monitor
                 state.waitFor(() -> fMax > 0 && state.asduCount >= fMax, durationMs);
                 if (state.isClosed()) {
@@ -736,6 +857,9 @@ final class ClientCommand implements ConnectionEventListener {
             failure = new Failure(state.isClosed() ? "connection-lost" : "failed", String.valueOf(e.getMessage()));
         } finally {
             close(con);
+            if (redundancy != null) {
+                close(redundancy.standbyConnection);
+            }
             exec.shutdownNow();
         }
 
@@ -757,8 +881,17 @@ final class ClientCommand implements ConnectionEventListener {
         if (tls != null) {
             r.addProperty("tls", startdt);
         }
-        if (op.equals("connect")) {
+        if (op.equals("connect") || op.equals("redundancy")) {
             r.addProperty("stopdtConfirmed", stopdt);
+        }
+        if (redundancy != null) {
+            JsonObject d = new JsonObject();
+            d.addProperty("switchover", redundancy.takeover ? "takeover" : "stopdt");
+            d.addProperty("primaryAsdus", redundancy.primaryAsdus());
+            d.addProperty("standbyAsdus", redundancy.standbyAsdus());
+            d.addProperty("strayAsdus", redundancy.strays());
+            d.addProperty("queuedEvent", redundancy.queuedEvent);
+            r.add("redundancy", d);
         }
         if (op.equals("file-dir")) {
             r.add("directory", directory);
@@ -774,9 +907,23 @@ final class ClientCommand implements ConnectionEventListener {
             f.addProperty("sha256", Codec.sha256Hex(data));
             r.add("file", f);
         }
+        JsonArray confirmations;
+        boolean terminated;
         synchronized (state) {
-            r.add("confirmations", state.confirmations.deepCopy());
-            r.addProperty("terminated", state.terminated);
+            confirmations = state.confirmations.deepCopy();
+            terminated = state.terminated;
+        }
+        if (redundancy != null && redundancy.standby != null) {
+            synchronized (redundancy.standby) {
+                confirmations.addAll(redundancy.standby.confirmations);
+                if (redundancy.secondInterrogation) {
+                    terminated = redundancy.standby.terminated;
+                }
+            }
+        }
+        r.add("confirmations", confirmations);
+        r.addProperty("terminated", terminated);
+        synchronized (state.asdus) {
             r.add("asdus", state.asdus.deepCopy());
         }
         r.addProperty("elapsedMs", System.currentTimeMillis() - begin);

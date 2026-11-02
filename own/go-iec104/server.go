@@ -45,6 +45,14 @@ type station struct {
 	sessions map[uint64]bool // data transfer started, by session
 	stored   map[asdu.IOA]*storedFile
 	arriving map[arrivalKey]*arrival
+
+	// --redundancy-group. Without it no event is ever queued, and the library's
+	// one group for every client means nothing: every connection is on its own.
+	group      bool
+	srv        *server.Server  // for the queue
+	active     *server.Session // the connection that has data transfer started
+	superseded map[uint64]bool // connections taken over, whose links are still started
+	pending    *asdu.ASDU      // the event, until a connection starts
 }
 
 // storedFile is an upload that arrived complete.
@@ -75,15 +83,35 @@ type arrival struct {
 func newStation(fx *fixture) *station {
 	st := &station{ca: asdu.CommonAddr(fx.Station.CommonAddress), fx: fx,
 		commands: map[int]*command{}, sessions: map[uint64]bool{},
-		stored: map[asdu.IOA]*storedFile{}, arriving: map[arrivalKey]*arrival{}}
+		stored: map[asdu.IOA]*storedFile{}, arriving: map[arrivalKey]*arrival{}, superseded: map[uint64]bool{}}
 	for _, c := range fx.Commands {
 		st.commands[c.IOA] = c
 	}
 	return st
 }
 
-// handler routes the requests the fixture format knows.
+// handler answers the requests the fixture format knows.
 func (st *station) handler() server.Handler {
+	mux := st.mux()
+	if !st.group {
+		return mux
+	}
+	// The library takes queued events off a connection that was taken over, and
+	// leaves its link started: answering it is up to the handler.
+	return server.HandlerFunc(func(s *server.Session, req *asdu.ASDU) {
+		st.mu.Lock()
+		superseded := st.superseded[s.ID()]
+		st.mu.Unlock()
+		if superseded {
+			logf("%s was taken over: ignoring %s", s.RemoteAddr(), req.Type)
+			return
+		}
+		mux.HandleASDU(s, req)
+	})
+}
+
+// mux routes the requests.
+func (st *station) mux() *server.Mux {
 	mux := server.NewMux()
 	mux.HandleFunc(asdu.C_IC_NA_1, one(st.interrogation))
 	mux.HandleFunc(asdu.C_CI_NA_1, one(st.counterInterrogation))
@@ -154,6 +182,10 @@ func (st *station) onState(s *server.Session, state iec104.State, _ error) {
 	st.mu.Lock()
 	started, known := st.sessions[s.ID()]
 	st.sessions[s.ID()] = state == iec104.StateStarted
+	var queued *asdu.ASDU
+	if st.group {
+		queued = st.follow(s, state, started)
+	}
 	var cut []arrivalKey
 	if state == iec104.StateDisconnected {
 		delete(st.sessions, s.ID())
@@ -164,6 +196,11 @@ func (st *station) onState(s *server.Session, state iec104.State, _ error) {
 		}
 	}
 	st.mu.Unlock()
+	if queued != nil {
+		if err := st.srv.Enqueue(queued); err != nil {
+			logf("cannot queue the event: %v", err)
+		}
+	}
 	// The library says nothing of a transfer that ends with its session.
 	for _, key := range cut {
 		st.fileReceived(key, false)
@@ -184,6 +221,68 @@ func (st *station) onState(s *server.Session, state iec104.State, _ error) {
 	e := event(name)
 	e["peer"] = peer
 	emit(e)
+}
+
+// follow keeps track of the group, and returns the event to hand to the library
+// now. A connection in STARTDT that gets a STOPDT act queues the event; a takeover
+// queues nothing, and neither does a connection that ends. The caller holds the
+// mutex.
+//
+// Each session reports on a goroutine of its own, so the STARTDT of one connection
+// can be reported before the STOPDT of the other that came first on the wire. Its
+// link knows better, which tells a takeover from that.
+//
+// The event waits here, and not in the library's queue, for a connection to start:
+// when the started connection stops, the library hands its queue to any other whose
+// link is started, and that includes one that was taken over (server/redundancy.go,
+// handOver).
+func (st *station) follow(s *server.Session, state iec104.State, wasStarted bool) *asdu.ASDU {
+	id := s.ID()
+	switch state {
+	case iec104.StateStarted:
+		if st.active != nil && st.active != s && st.active.Started() {
+			st.superseded[st.active.ID()] = true
+		}
+		st.active = s
+		delete(st.superseded, id)
+		pending := st.pending
+		st.pending = nil
+		return pending
+	case iec104.StateStopped:
+		if !wasStarted {
+			return nil
+		}
+		superseded := st.superseded[id]
+		delete(st.superseded, id)
+		if st.active == s {
+			st.active = nil
+		}
+		if superseded {
+			return nil
+		}
+		if st.active != nil {
+			return st.queuedEvent()
+		}
+		st.pending = st.queuedEvent()
+	case iec104.StateDisconnected:
+		delete(st.superseded, id)
+		if st.active == s {
+			st.active = nil
+		}
+	}
+	return nil
+}
+
+// queuedEvent is the event of a redundancy group: the single point with the lowest
+// address, as it is now. The points are in ascending address order. The caller
+// holds the mutex.
+func (st *station) queuedEvent() *asdu.ASDU {
+	for _, p := range st.fx.Points {
+		if p.Type == "M_SP_NA_1" {
+			return asdu.New(asdu.CauseSpontaneous, st.ca, p.object(asdu.Timestamp{}))
+		}
+	}
+	return nil
 }
 
 // send transmits an ASDU on the session; the end of the session is not worth a
@@ -492,6 +591,7 @@ func (st *station) serve(ln net.Listener, opts ...server.Option) (*server.Server
 	if err != nil {
 		return nil, nil, err
 	}
+	st.srv = srv
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ln) }()
 	return srv, served, nil
@@ -505,6 +605,7 @@ func runServer(f *flags) int {
 	params := f.apci()
 	secure := f.security()
 	f.accessRoles(secure)
+	group := f.has("redundancy-group")
 	transport := f.transport()
 	if secure != nil && transport != nil {
 		f.fail("--tls with --secure is not in the contract")
@@ -519,6 +620,7 @@ func runServer(f *flags) int {
 		return exitInvalidFixture
 	}
 	st := newStation(fx)
+	st.group = group
 	opts := []server.Option{server.WithParams(params)}
 	if secure != nil {
 		if _, err := secure.endpoint(sec.Controlled, st.ca, 0); err != nil {
@@ -558,6 +660,9 @@ func runServer(f *flags) int {
 	}
 	if transport != nil {
 		ready["tls"] = true
+	}
+	if group {
+		ready["redundancyGroup"] = true
 	}
 	emit(ready)
 	if err := os.WriteFile(readyFile, []byte("ready\n"), 0o644); err != nil {

@@ -141,6 +141,8 @@ type transferKey struct {
 type transfer struct {
 	file      *fileSpec
 	requested bool
+	lastSent  bool // the checksum of the file went out
+	acked     bool // the file acknowledgement arrived
 }
 
 func (f *fileSpec) sections() int { return (f.Size + f.SectionSize - 1) / f.SectionSize }
@@ -159,19 +161,44 @@ func fileEvent(f *fileSpec, success bool) {
 
 // abandonTransfers ends what a closed connection left behind.
 func (s *station) abandonTransfers(c asdu.Connect) {
-	var ended []*fileSpec
+	var ended []*transfer
 	s.mu.Lock()
 	for k, t := range s.transfers {
 		if k.conn == c {
 			delete(s.transfers, k)
 			if t.requested {
-				ended = append(ended, t.file)
+				ended = append(ended, t)
 			}
 		}
 	}
 	s.mu.Unlock()
-	for _, f := range ended {
-		fileEvent(f, false)
+	for _, t := range ended {
+		fileEvent(t.file, t.acked)
+	}
+}
+
+// noteFrame sees every APDU as go-iecp5 receives it, by way of its log. A
+// session stops its handler loop as soon as the peer closes, whatever is still
+// queued (cs104/server_session.go, handlerLoop). A controlling station's last
+// word is the file acknowledgement, after which it closes, so the handler often
+// does not get to see it. The frame did arrive: this is where that shows. It
+// does not say on which connection, which matters only to two downloads of one
+// file that are both at their last step.
+func (s *station) noteFrame(apdu []byte) {
+	// APCI 6, then type, count, cause, originator, common address 2, address 3,
+	// NOF 2, NOS, AFQ, at the only sizes this adapter uses (asdu.ParamsWide).
+	if len(apdu) < 19 || apdu[2]&1 != 0 || asdu.TypeID(apdu[6]) != asdu.F_AF_NA_1 ||
+		apdu[8]&0x3f != byte(asdu.FileTransfer) || apdu[18]&0x0f != afqFileAck {
+		return
+	}
+	ioa := int(apdu[12]) | int(apdu[13])<<8 | int(apdu[14])<<16
+	nof := int(apdu[15]) | int(apdu[16])<<8
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, t := range s.transfers {
+		if k.ioa == ioa && t.file.Name == nof && t.lastSent {
+			t.acked = true
+		}
 	}
 }
 
@@ -338,6 +365,9 @@ func (s *station) fileAck(c asdu.Connect, request, pack *asdu.ASDU) {
 		}
 		// The NOS of this one is the library's choice (docs/FIXTURES.md); the
 		// number of the last section, as cB-Sigma/iec60870.
+		s.mu.Lock()
+		t.lastSent = true
+		s.mu.Unlock()
 		chs := checksum(fileOctets(f.IOA, f.Size))
 		send(c, lastSegmentOrSection(s.fileAnswer(asdu.F_LS_NA_1, request, f.IOA), f.Name, f.sections(), lsqLastSection, chs))
 	}

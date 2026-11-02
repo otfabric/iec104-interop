@@ -252,11 +252,35 @@ library. Files with consecutive addresses arrive in one ASDU; the agreement chec
 of the self-tests does not compare SQ. What a station without any file answers is
 left to the library as well.
 
+### Redundancy group
+
+Only with `server --redundancy-group`, and so with the feature
+`redundancyServer`. All connections form one redundancy group in the sense of
+IEC 60870-5-104 clause 10:
+
+- At most one connection has data transfer started. A connection in STOPDT gets
+  no ASDU.
+- A STARTDT act on another connection is confirmed there, and from then on
+  nothing is sent on the connection that was started. Whether that one is also
+  closed is left to the stack: the lib60870, openmuc and cbsigma stations close
+  it, the otfabric station keeps it open. A test must not rely on either.
+  A connection already in STOPDT stays up either way.
+- **Event queue.** When a connection in STARTDT gets a STOPDT act, the station
+  queues one event: the point of type `M_SP_NA_1` with the lowest address, with
+  its current value and quality, without time tag, with cause 3 and originator 0.
+  It waits for the next connection to start, and goes out after that connection's
+  STARTDT con. A takeover queues nothing, and neither does a connection that
+  ends. This is the only thing a station sends unasked, and only in this mode.
+
+Answers still go to the connection that asked; the group changes nothing else.
+
+Without the flag there is no group and no queue: every connection is on its own.
+
 ### What a station never does
 
-- Send anything unsolicited: no cyclic or background data, no end of
-  initialization. Every ASDU is the answer to a request, which keeps tests
-  free of timing assumptions.
+- Send anything unsolicited, apart from the event of a redundancy group: no
+  cyclic or background data, no end of initialization. Every other ASDU is the
+  answer to a request, which keeps tests free of timing assumptions.
 - Change state without a command. Restart the container to return to the
   fixture.
 

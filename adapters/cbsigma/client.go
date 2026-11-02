@@ -290,6 +290,7 @@ func runClient(op string, a *args) (int, error) {
 		ioa, hold, maxASDU int
 		fileSize, section  int
 		put                *filePut
+		switchover         = "stopdt"
 		fileName           = 1
 		duration           = 1000
 		clock              = time.Now()
@@ -353,6 +354,10 @@ func runClient(op string, a *args) (int, error) {
 			put = newFilePut(ioa, fileName, fileSize, section)
 		}
 	case "file-dir":
+	case "redundancy":
+		if switchover = a.str("--switchover", "stopdt"); switchover != "stopdt" && switchover != "takeover" {
+			err = usagef("redundancy: --switchover must be stopdt or takeover")
+		}
 	default:
 		err = usagef("client: unknown operation %s", op)
 	}
@@ -430,7 +435,119 @@ func runClient(op string, a *args) (int, error) {
 		}
 		return failf("startdt-timeout", "no STARTDT con from the station")
 	}
+	red := &redundancyRun{takeover: switchover == "takeover", s: s, p: p, timeout: timeout}
+	// waitSecure waits for the association of --secure, if there is one.
+	waitSecure := func() error {
+		if sl == nil {
+			return nil
+		}
+		ep := sl.Endpoint()
+		deadline := time.Now().Add(timeout)
+		for !ep.KeysValid() {
+			if s.isClosed() {
+				return failf("connection-lost", "connection closed while the secure session was set up")
+			}
+			if time.Now().After(deadline) {
+				return failf("security-failed", "no secure session with the station: %s", ep.Status().State)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		return nil
+	}
+	// redundancy is the sequence of the contract, by its steps.
+	redundancy := func() error {
+		for i := range red.links {
+			l, err := open()
+			if err != nil {
+				return err
+			}
+			red.links[i] = l
+			red.watch(i, l)
+		}
+		first, second := red.links[primary], red.links[standby]
+		start := func(i int, l *cs104.Link) error {
+			s.update(func() { red.inTime[i] = true })
+			sctx, scancel := context.WithTimeout(ctx, timeout)
+			defer scancel()
+			if err := l.StartDT(sctx); err != nil {
+				if err := red.straySeen(); err != nil {
+					return err
+				}
+				s.waitFor(func() bool { return false }, 20*time.Millisecond)
+				return startFailure(s.isClosed())
+			}
+			return nil
+		}
+		// Step 1.
+		if err := start(primary, first); err != nil {
+			return err
+		}
+		started = true
+		if err := waitSecure(); err != nil {
+			return err
+		}
+		secured = sl != nil
+		// Step 2.
+		if err := red.interrogate(ctx, first, 1); err != nil {
+			return err
+		}
+		// Step 3.
+		if !red.takeover {
+			if err := red.stop(ctx, first); err != nil {
+				return err
+			}
+			s.update(func() { red.inTime[primary] = false })
+		}
+		// Step 4. From here on it is the standby that must stay.
+		s.update(func() { red.current, s.closed = standby, red.closed[standby] })
+		if err := start(standby, second); err != nil {
+			return err
+		}
+		s.update(func() { red.inTime[primary] = false })
+		if err := red.straySeen(); err != nil {
+			return err
+		}
+		if !red.takeover {
+			s.mu.Lock()
+			lost := red.closed[primary]
+			s.mu.Unlock()
+			if lost {
+				return failf("connection-lost", "the primary closed before the standby was started")
+			}
+			// Step 5.
+			if !s.waitFor(func() bool { return red.queued }, timeout) {
+				if s.isClosed() {
+					return failf("connection-lost", "connection closed while waiting for the queued event")
+				}
+				return failf("timeout", "no queued event on the standby")
+			}
+		}
+		if err := waitSecure(); err != nil {
+			return err
+		}
+		// Step 6.
+		if err := red.interrogate(ctx, second, 2); err != nil {
+			return err
+		}
+		// Step 7, with what --collect-ms asks for before the close.
+		if err := red.stop(ctx, second); err != nil {
+			return err
+		}
+		stopdt = true
+		s.update(func() { red.inTime[standby] = false })
+		if collect > 0 {
+			s.waitFor(func() bool { return false }, collect)
+		}
+		if err := red.straySeen(); err != nil {
+			return err
+		}
+		exitCode = exitOK
+		return nil
+	}
 	operation := func() error {
+		if op == "redundancy" {
+			return redundancy()
+		}
 		link, err := open()
 		if err != nil {
 			return err
@@ -460,20 +577,10 @@ func runClient(op string, a *args) (int, error) {
 		}
 		started = true
 
-		if sl != nil {
-			ep := sl.Endpoint()
-			deadline := time.Now().Add(timeout)
-			for !ep.KeysValid() {
-				if s.isClosed() {
-					return failf("connection-lost", "connection closed while the secure session was set up")
-				}
-				if time.Now().After(deadline) {
-					return failf("security-failed", "no secure session with the station: %s", ep.Status().State)
-				}
-				time.Sleep(5 * time.Millisecond)
-			}
-			secured = true
+		if err := waitSecure(); err != nil {
+			return err
 		}
+		secured = sl != nil
 
 		activation := iec.CauseActivation
 		expect := func(t iec.TypeID) { s.update(func() { s.expectType = t }) }
@@ -632,6 +739,7 @@ func runClient(op string, a *args) (int, error) {
 	if p.link != nil {
 		p.link.Close()
 	}
+	red.close()
 
 	r := object{
 		"schemaVersion": schemaVersion,
@@ -650,8 +758,11 @@ func runClient(op string, a *args) (int, error) {
 	s.mu.Lock()
 	r["connected"] = connected
 	r["startdtConfirmed"] = started
-	if op == "connect" {
+	if op == "connect" || op == "redundancy" {
 		r["stopdtConfirmed"] = stopdt
+	}
+	if op == "redundancy" {
+		r["redundancy"] = red.result(switchover)
 	}
 	if security != nil {
 		r["secured"] = secured

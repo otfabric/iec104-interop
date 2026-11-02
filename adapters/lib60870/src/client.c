@@ -12,6 +12,16 @@
 #include "hal_thread.h"
 #include "hal_time.h"
 
+/* One of the two connections of the redundancy operation. */
+typedef struct {
+    bool startdtCon;
+    bool stopdtCon;
+    bool started; /* between STARTDT con and what ends it: see runRedundancy */
+    bool closed;
+    int asdus;    /* I frames received while started */
+    bool gotSpontaneous;
+} Link;
+
 /* Everything the receive thread and the main thread share. */
 static struct {
     pthread_mutex_t lock;
@@ -38,6 +48,10 @@ static struct {
     int fileEventNext;
     cJSON* directory;     /* file-dir: the entries received */
     bool directoryDone;   /* the entry with the LFD bit arrived */
+    Link links[2];        /* redundancy: the primary and the standby */
+    bool takeover;
+    bool primaryMayClose;
+    int strays;           /* I frames on a connection that is not started */
 } st = { .lock = PTHREAD_MUTEX_INITIALIZER, .changed = PTHREAD_COND_INITIALIZER };
 
 /* One received file transfer ASDU, reduced to what the procedure needs. */
@@ -121,26 +135,75 @@ static void pushDirectory(CS101_ASDU asdu)
     }
 }
 
+/* Called with st.lock held. */
+static void refreshClosed(void)
+{
+    st.closed = st.links[1].closed || (st.links[0].closed && !st.primaryMayClose);
+}
+
+/* A connection of the redundancy operation. Called with st.lock held. */
+static void linkEvent(Link* l, CS104_ConnectionEvent ev)
+{
+    switch (ev) {
+    case CS104_CONNECTION_STARTDT_CON_RECEIVED:
+        l->startdtCon = l->started = true;
+        if (l == &st.links[0])
+            st.startdtCon = true;
+        else if (st.takeover)
+            st.links[0].started = false;
+        break;
+    case CS104_CONNECTION_STOPDT_CON_RECEIVED:
+        l->stopdtCon = true;
+        l->started = false;
+        if (l == &st.links[1])
+            st.stopdtCon = true;
+        break;
+    case CS104_CONNECTION_FAILED:
+    case CS104_CONNECTION_CLOSED:
+        l->closed = true;
+        refreshClosed();
+        break;
+    default:
+        break;
+    }
+}
+
 static void connectionHandler(void* parameter, CS104_Connection connection, CS104_ConnectionEvent ev)
 {
-    (void)parameter;
     (void)connection;
     pthread_mutex_lock(&st.lock);
     switch (ev) {
     case CS104_CONNECTION_OPENED: st.opened = true; break;
-    case CS104_CONNECTION_STARTDT_CON_RECEIVED: st.startdtCon = true; break;
-    case CS104_CONNECTION_STOPDT_CON_RECEIVED: st.stopdtCon = true; break;
+    case CS104_CONNECTION_STARTDT_CON_RECEIVED: if (parameter == NULL) st.startdtCon = true; break;
+    case CS104_CONNECTION_STOPDT_CON_RECEIVED: if (parameter == NULL) st.stopdtCon = true; break;
     case CS104_CONNECTION_FAILED: st.tcpFailed = true; /* fall through */
-    case CS104_CONNECTION_CLOSED: st.closed = true; break;
+    case CS104_CONNECTION_CLOSED: if (parameter == NULL) st.closed = true; break;
     default: break;
     }
+    if (parameter != NULL)
+        linkEvent(parameter, ev);
     pthread_cond_broadcast(&st.changed);
+    pthread_mutex_unlock(&st.lock);
+}
+
+/* Sees every frame before lib60870 looks at it, and it delivers an I frame
+ * whatever the state of the connection is. */
+static void rawMessageHandler(void* parameter, uint8_t* message, int size, bool sent)
+{
+    Link* l = parameter;
+    if (sent || size < 7 || (message[2] & 1) != 0)
+        return;
+    pthread_mutex_lock(&st.lock);
+    if (l->started)
+        l->asdus++;
+    else
+        st.strays++;
     pthread_mutex_unlock(&st.lock);
 }
 
 static bool asduHandler(void* parameter, int address, CS101_ASDU asdu)
 {
-    (void)parameter;
+    Link* link = parameter;
     (void)address;
     cJSON* j = asduToJson(asdu);
     IEC60870_5_TypeID type = CS101_ASDU_getTypeID(asdu);
@@ -149,6 +212,8 @@ static bool asduHandler(void* parameter, int address, CS101_ASDU asdu)
     pthread_mutex_lock(&st.lock);
     cJSON_AddItemToArray(st.asdus, j);
     st.asduCount++;
+    if (link != NULL && cot == CS101_COT_SPONTANEOUS)
+        link->gotSpontaneous = true;
     pushFileEvent(asdu);
     if (type == F_DR_TA_1 && cot == CS101_COT_REQUEST)
         pushDirectory(asdu);
@@ -211,6 +276,9 @@ static bool waitFor(Predicate pred, int arg, int timeoutMs)
 }
 
 static bool hasStartDt(int a) { (void)a; return st.startdtCon; }
+static bool hasLinkStartDt(int i) { return st.links[i].startdtCon; }
+static bool hasLinkStopDt(int i) { return st.links[i].stopdtCon; }
+static bool hasQueuedEvent(int i) { return st.links[i].gotSpontaneous; }
 static bool hasStopDt(int a) { (void)a; return st.stopdtCon; }
 static bool hasConfirmations(int n) { return cJSON_GetArraySize(st.confirmations) >= n; }
 static bool hasTermination(int a) { (void)a; return st.terminated || st.negativeCot != 0; }
@@ -634,6 +702,64 @@ static bool callDirectory(CS104_Connection con, int oa, int ca, int timeoutMs)
     return failOp("failed", "unexpected answer of type %d", e.type);
 }
 
+/* ---- redundancy: two connections, the second taking over ---- */
+
+/* C_IC_NA_1, QOI 20, until its activation termination. */
+static bool interrogateOn(CS104_Connection con, int ca, int confirmation, int timeoutMs)
+{
+    st.expectType = C_IC_NA_1;
+    pthread_mutex_lock(&st.lock);
+    st.terminated = false;
+    pthread_mutex_unlock(&st.lock);
+    CS104_Connection_sendInterrogationCommand(con, CS101_COT_ACTIVATION, ca, IEC60870_QOI_STATION);
+    return awaitConfirmation(confirmation, timeoutMs) && awaitTermination(timeoutMs);
+}
+
+static void setPrimaryMayClose(void)
+{
+    pthread_mutex_lock(&st.lock);
+    st.primaryMayClose = true;
+    refreshClosed();
+    pthread_mutex_unlock(&st.lock);
+}
+
+/* The steps of docs/CONTAINER_CONTRACT.md, from where the primary is started. */
+static bool runRedundancy(CS104_Connection primary, CS104_Connection standby, int ca, bool hasTls, int timeoutMs)
+{
+    if (!interrogateOn(primary, ca, 1, timeoutMs))
+        return false;
+
+    if (st.takeover) {
+        setPrimaryMayClose();
+    } else {
+        CS104_Connection_sendStopDT(primary);
+        if (!waitFor(hasLinkStopDt, 0, timeoutMs))
+            return st.closed ? failOp("connection-lost", "the primary closed before its STOPDT con%.0d", 0)
+                             : failOp("stopdt-timeout", "no STOPDT con on the primary%.0d", 0);
+    }
+
+    CS104_Connection_sendStartDT(standby);
+    if (!waitFor(hasLinkStartDt, 1, timeoutMs)) {
+        if (st.closed)
+            return failOp(hasTls ? "tls-failed" : "connection-lost", "a connection closed before the STARTDT con of the standby%.0d", 0);
+        return failOp(hasTls ? "tls-failed" : "startdt-timeout", "no STARTDT con on the standby%.0d", 0);
+    }
+    setPrimaryMayClose();
+
+    if (!st.takeover && !waitFor(hasQueuedEvent, 1, timeoutMs))
+        return st.closed ? failOp("connection-lost", "the standby closed before the queued event%.0d", 0)
+                         : failOp("timeout", "no event with cause 3 on the standby%.0d", 0);
+
+    if (!interrogateOn(standby, ca, 2, timeoutMs))
+        return false;
+
+    CS104_Connection_sendStopDT(standby);
+    if (!waitFor(hasLinkStopDt, 1, timeoutMs))
+        return st.closed ? failOp("connection-lost", "the standby closed before its STOPDT con%.0d", 0)
+                         : failOp("stopdt-timeout", "no STOPDT con on the standby%.0d", 0);
+    return true;
+}
+
 int runClient(const char* op, Args* args)
 {
     const char* host = argString(args, "--host", NULL);
@@ -661,8 +787,10 @@ int runClient(const char* op, Args* args)
         OP_MONITOR,
         OP_FILE,
         OP_FILE_PUT,
-        OP_FILE_DIR
+        OP_FILE_DIR,
+        OP_REDUNDANCY
     } kind;
+    const char* switchover = "stopdt";
     int fileName = 1, fileSectionSize = 0;
     Download download = { NULL, 0, 0, 0 };
     int qoi = 20, qcc = 5, ioa = 0, holdMs = 0, durationMs = 1000, maxAsdus = 0, qualifier = 0;
@@ -749,6 +877,14 @@ int runClient(const char* op, Args* args)
         }
     } else if (!strcmp(op, "file-dir")) {
         kind = OP_FILE_DIR;
+    } else if (!strcmp(op, "redundancy")) {
+        kind = OP_REDUNDANCY;
+        switchover = argString(args, "--switchover", "stopdt");
+        if (strcmp(switchover, "stopdt") && strcmp(switchover, "takeover")) {
+            logf_("redundancy: --switchover must be stopdt or takeover");
+            return EXIT_USAGE;
+        }
+        st.takeover = !strcmp(switchover, "takeover");
     } else if (!strcmp(op, "monitor")) {
         kind = OP_MONITOR;
         if (!argInt(args, "--duration-ms", 1000, &durationMs) || !argInt(args, "--max-asdus", 0, &maxAsdus))
@@ -775,8 +911,20 @@ int runClient(const char* op, Args* args)
     CS104_Connection_setAPCIParameters(con, &apci);
     CS104_Connection_setConnectTimeout(con, connectTimeoutMs);
     CS104_Connection_setOriginatorAddress(con, (uint8_t)oa);
-    CS104_Connection_setConnectionHandler(con, connectionHandler, NULL);
-    CS104_Connection_setASDUReceivedHandler(con, asduHandler, NULL);
+    CS104_Connection standby = NULL;
+    if (kind == OP_REDUNDANCY) {
+        standby = tls ? CS104_Connection_createSecure(host, port, tls) : CS104_Connection_create(host, port);
+        CS104_Connection_setAPCIParameters(standby, &apci);
+        CS104_Connection_setConnectTimeout(standby, connectTimeoutMs);
+        CS104_Connection_setOriginatorAddress(standby, (uint8_t)oa);
+        CS104_Connection_setConnectionHandler(standby, connectionHandler, &st.links[1]);
+        CS104_Connection_setASDUReceivedHandler(standby, asduHandler, &st.links[1]);
+        CS104_Connection_setRawMessageHandler(standby, rawMessageHandler, &st.links[1]);
+        CS104_Connection_setRawMessageHandler(con, rawMessageHandler, &st.links[0]);
+    }
+    void* primaryLink = kind == OP_REDUNDANCY ? &st.links[0] : NULL;
+    CS104_Connection_setConnectionHandler(con, connectionHandler, primaryLink);
+    CS104_Connection_setASDUReceivedHandler(con, asduHandler, primaryLink);
 
     st.asdus = cJSON_CreateArray();
     st.confirmations = cJSON_CreateArray();
@@ -789,6 +937,14 @@ int runClient(const char* op, Args* args)
         if (!connected)
             exitCode = EXIT_CONNECT_FAILED;
         goto report;
+    }
+    if (standby != NULL) {
+        connected = false;
+        if (!establish(standby, tls != NULL, connectTimeoutMs, timeoutMs, &connected)) {
+            if (!connected)
+                exitCode = EXIT_CONNECT_FAILED;
+            goto report;
+        }
     }
     CS104_Connection_sendStartDT(con);
     if (!waitFor(hasStartDt, 0, timeoutMs)) {
@@ -885,6 +1041,10 @@ int runClient(const char* op, Args* args)
         ok = callDirectory(con, oa, ca, timeoutMs);
         break;
 
+    case OP_REDUNDANCY:
+        ok = runRedundancy(con, standby, ca, tls != NULL, timeoutMs);
+        break;
+
     case OP_MONITOR:
         waitFor(hasAsdus, maxAsdus, durationMs);
         ok = !st.closed || failOp("connection-lost", "connection closed while monitoring%.0d", 0);
@@ -896,10 +1056,17 @@ int runClient(const char* op, Args* args)
         waitFor(never, 0, collectMs);
 
 report:
+    if (kind == OP_REDUNDANCY && st.strays > 0) {
+        ok = false;
+        failOp("failed", "%d I frames on a connection that was not started", st.strays);
+    }
     if (ok)
         exitCode = EXIT_OK;
-    if (!st.handshakeStuck)
+    if (!st.handshakeStuck) {
         CS104_Connection_destroy(con); /* closes; no callback runs after this */
+        if (standby != NULL)
+            CS104_Connection_destroy(standby);
+    }
 
     cJSON* r = cJSON_CreateObject();
     cJSON_AddStringToObject(r, "schemaVersion", SCHEMA_VERSION);
@@ -915,7 +1082,7 @@ report:
     }
     cJSON_AddBoolToObject(r, "connected", connected);
     cJSON_AddBoolToObject(r, "startdtConfirmed", st.startdtCon);
-    if (kind == OP_CONNECT)
+    if (kind == OP_CONNECT || kind == OP_REDUNDANCY)
         cJSON_AddBoolToObject(r, "stopdtConfirmed", st.stopdtCon);
     cJSON_AddItemToObject(r, "confirmations", st.confirmations);
     cJSON_AddBoolToObject(r, "terminated", st.terminated);
@@ -934,6 +1101,14 @@ report:
     }
     if (kind == OP_FILE_DIR)
         cJSON_AddItemToObject(r, "directory", st.directory);
+    if (kind == OP_REDUNDANCY) {
+        cJSON* red = cJSON_AddObjectToObject(r, "redundancy");
+        cJSON_AddStringToObject(red, "switchover", switchover);
+        cJSON_AddNumberToObject(red, "primaryAsdus", st.links[0].asdus);
+        cJSON_AddNumberToObject(red, "standbyAsdus", st.links[1].asdus);
+        cJSON_AddNumberToObject(red, "strayAsdus", st.strays);
+        cJSON_AddBoolToObject(red, "queuedEvent", st.links[1].gotSpontaneous);
+    }
     cJSON_AddItemToObject(r, "asdus", st.asdus);
     cJSON_AddNumberToObject(r, "elapsedMs", (double)(Hal_getTimeInMs() - begin));
     emitJson(r);

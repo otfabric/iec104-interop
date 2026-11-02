@@ -40,7 +40,8 @@ public final class Main {
     private static final String USAGE = String.join("\n",
             "usage: iec104-interop <command>",
             "",
-            "  server [--fixture PATH] [--bind-address ADDR] [--port N] [--ready-file PATH] [APCI] [TLS]",
+            "  server [--fixture PATH] [--bind-address ADDR] [--port N] [--ready-file PATH] [--redundancy-group]",
+            "         [APCI] [TLS]",
             "  client <operation> --host HOST [--port N] [--common-address N] [--originator-address N]",
             "         [--timeout-ms N] [--connect-timeout-ms N] [--collect-ms N] [APCI] [TLS] [operation flags]",
             "      connect             [--hold-ms N]",
@@ -55,6 +56,7 @@ public final class Main {
             "      file-get            --ioa N [--name N]",
             "      file-put            --ioa N --size N [--name N] [--section-size N]",
             "      file-dir",
+            "      redundancy          [--switchover stopdt|takeover]",
             "  print-capabilities",
             "  print-fixture [NAME]",
             "  version",
@@ -152,8 +154,8 @@ public final class Main {
         f.addProperty("fileUploadClient", true);
         f.addProperty("fileDirectoryServer", true);
         f.addProperty("fileDirectoryClient", true);
-        f.addProperty("redundancyServer", false);
-        f.addProperty("redundancyClient", false);
+        f.addProperty("redundancyServer", true);
+        f.addProperty("redundancyClient", true);
         f.addProperty("secureAuthentication", false);
         c.add("features", f);
 
@@ -162,7 +164,7 @@ public final class Main {
         c.add("commandTypes",
                 strings("C_SC_NA_1", "C_DC_NA_1", "C_RC_NA_1", "C_SE_NA_1", "C_SE_NB_1", "C_SE_NC_1"));
         c.add("clientOperations", strings("connect", "interrogate", "counter-interrogate", "read", "clock-sync",
-                "test-command", "command", "monitor", "file-get", "file-put", "file-dir"));
+                "test-command", "command", "monitor", "file-get", "file-put", "file-dir", "redundancy"));
         emit(c);
         return EXIT_OK;
     }

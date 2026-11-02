@@ -47,10 +47,79 @@ final class ServerCommand {
 
     private final Fixture fx;
     private final FileStation fileStation;
+    /** Null without --redundancy-group. */
+    private final Group group;
 
-    private ServerCommand(Fixture fx) {
+    private ServerCommand(Fixture fx, boolean redundancyGroup) {
         this.fx = fx;
         this.fileStation = new FileStation(fx);
+        this.group = redundancyGroup ? new Group() : null;
+    }
+
+    /**
+     * The redundancy group of docs/FIXTURES.md. j60870 has none, only the state callback and Connection.close.
+     *
+     * <p>
+     * The callback runs on the reader of the connection, which holds its monitor. For STARTDT j60870 has by then put the
+     * confirmation into the buffer of the stream but not flushed it (Connection.java:388, 393, 395). So an I frame sent
+     * here goes after the confirmation, and a connection closed here is closed before the confirmation leaves. Its
+     * monitor is taken without holding the lock of the group, which is what its own reader might be waiting for.
+     */
+    private final class Group {
+        private Connection started;
+        private ASdu queued;
+
+        void dataTransferStarted(Connection c) throws IOException {
+            Connection replaced;
+            ASdu event;
+            synchronized (this) {
+                replaced = started == c ? null : started;
+                started = c;
+                event = queued;
+                queued = null;
+            }
+            if (replaced != null) {
+                replaced.close();
+            }
+            if (event != null) {
+                c.send(event);
+            }
+        }
+
+        void dataTransferStopped(Connection c) {
+            boolean wasStarted;
+            synchronized (this) {
+                wasStarted = started == c;
+                if (wasStarted) {
+                    started = null;
+                }
+            }
+            if (wasStarted) {
+                ASdu event = stationEvent();
+                synchronized (this) {
+                    queued = event;
+                }
+            }
+        }
+
+        synchronized void closed(Connection c) {
+            if (started == c) {
+                started = null;
+            }
+        }
+    }
+
+    /** The point of type M_SP_NA_1 with the lowest address, as it is now, with cause 3. Null without one. */
+    private ASdu stationEvent() {
+        synchronized (fx) {
+            for (Fixture.Point p : fx.points) {
+                if (p.type == ASduType.M_SP_NA_1) {
+                    return new ASdu(ASduType.M_SP_NA_1, false, CauseOfTransmission.causeFor(3), false, false, 0,
+                            fx.commonAddress, Codec.pointObject(p, null));
+                }
+            }
+        }
+        return null;
     }
 
     private static JsonObject event(String name) {
@@ -75,6 +144,7 @@ final class ServerCommand {
         int port = args.integer("--port", 2404);
         Args.Apci apci = args.apci();
         Tls tls = Tls.fromArgs(args);
+        boolean redundancyGroup = args.flag("--redundancy-group");
         args.finish("server");
         if (port < 1 || port > 65535) {
             throw new Args.UsageException("--port: " + port + " is not a TCP port");
@@ -89,7 +159,7 @@ final class ServerCommand {
         }
         Files.deleteIfExists(readyFile);
 
-        ServerCommand station = new ServerCommand(fx);
+        ServerCommand station = new ServerCommand(fx, redundancyGroup);
         Server.Builder builder = Server.builder()
                 .setBindAddr(InetAddress.getByName(bind))
                 .setPort(port)
@@ -137,6 +207,9 @@ final class ServerCommand {
         ready.addProperty("commonAddress", fx.commonAddress);
         if (tls != null) {
             ready.addProperty("tls", true);
+        }
+        if (redundancyGroup) {
+            ready.addProperty("redundancyGroup", true);
         }
         Main.emit(ready);
 
@@ -192,6 +265,9 @@ final class ServerCommand {
                 Main.log("connection closed: " + cause.getCause());
             }
             files.closed();
+            if (group != null) {
+                group.closed(connection);
+            }
             JsonObject e = event("connection-closed");
             e.addProperty("peer", peer(connection));
             Main.emit(e);
@@ -202,6 +278,18 @@ final class ServerCommand {
             JsonObject e = event(stopped ? "data-transfer-stopped" : "data-transfer-started");
             e.addProperty("peer", peer(connection));
             Main.emit(e);
+            if (group == null) {
+                return;
+            }
+            if (stopped) {
+                group.dataTransferStopped(connection);
+                return;
+            }
+            try {
+                group.dataTransferStarted(connection);
+            } catch (IOException | RuntimeException x) {
+                Main.log("cannot send the queued event: " + x);
+            }
         }
     }
 
@@ -433,14 +521,15 @@ final class ServerCommand {
         InformationObject report = null;
         ASduType reportType = null;
         int reportCause = 0;
+        // Not sending with the lock held: the state callback of a connection takes it with the connection's monitor.
+        Fixture.Command cmd = fx.command(ioa);
+        if (cmd == null || cmd.type != type) {
+            e.addProperty("outcome", "unknown-ioa");
+            Main.emit(e);
+            reject(c, asdu, UNKNOWN_IOA);
+            return;
+        }
         synchronized (fx) {
-            Fixture.Command cmd = fx.command(ioa);
-            if (cmd == null || cmd.type != type) {
-                e.addProperty("outcome", "unknown-ioa");
-                Main.emit(e);
-                reject(c, asdu, UNKNOWN_IOA);
-                return;
-            }
             double value;
             boolean select;
             boolean valid = true;

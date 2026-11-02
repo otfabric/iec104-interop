@@ -45,6 +45,14 @@ type session struct {
 	expectType    asdu.TypeID
 	expectRead    bool
 	expectIOA     int
+
+	// redundancy: this session's ASDUs also go in the list of another one,
+	// and from windowOver on an ASDU on this connection is a stray.
+	also        *session
+	windowOver  bool
+	received    int
+	strays      int
+	spontaneous int
 }
 
 func (s *session) update(f func()) {
@@ -85,8 +93,19 @@ func (s *session) isClosed() bool {
 func (s *session) onASDU(a *asdu.ASDU) error {
 	doc := asduJSON(a)
 	cot := int(a.Coa.Cause)
+	if s.also != nil {
+		s.also.update(func() { s.also.asdus = append(s.also.asdus, doc) })
+	}
 	s.update(func() {
 		s.asdus = append(s.asdus, doc)
+		if s.windowOver {
+			s.strays++
+		} else {
+			s.received++
+		}
+		if cot == int(asdu.Spontaneous) {
+			s.spontaneous++
+		}
 		switch {
 		case s.expectType != 0 && a.Type == s.expectType:
 			unknown := cot >= 44 && cot <= 47
@@ -164,6 +183,27 @@ func (w withOriginator) Send(a *asdu.ASDU) error {
 func stopConfirmed(c *cs104.Client) bool {
 	probe := asdu.NewASDU(c.Params(), asdu.Identifier{})
 	return errors.Is(c.Send(probe), cs104.ErrNotActive)
+}
+
+// stopTransfer sends STOPDT act and waits for STOPDT con; code is the error
+// without one.
+func stopTransfer(c *cs104.Client, s *session, timeout time.Duration, code string) error {
+	c.SendStopDt()
+	deadline := time.Now().Add(timeout)
+	for !stopConfirmed(c) {
+		if s.isClosed() {
+			return failf("connection-lost", "connection closed while waiting for STOPDT con")
+		}
+		if time.Now().After(deadline) {
+			return failf(code, "no STOPDT con from the station")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// A connection that just dropped also reads as "not active".
+	if s.waitFor(func() bool { return false }, 50*time.Millisecond); s.isClosed() {
+		return failf("connection-lost", "connection closed while waiting for STOPDT con")
+	}
+	return nil
 }
 
 // processCommand is a process command of the contract, parsed once and sent
@@ -283,6 +323,7 @@ func runClient(op string, a *args) (int, error) {
 		qoi, qcc           = 20, 5
 		ioa, hold, maxASDU int
 		name, size, secSz  int
+		switchover         string
 		duration           = 1000
 		clock              = time.Now()
 		mode               = "direct"
@@ -326,6 +367,11 @@ func runClient(op string, a *args) (int, error) {
 			return 0, err
 		}
 	case "file-dir":
+	case "redundancy":
+		switchover = a.str("--switchover", "stopdt")
+		if switchover != "stopdt" && switchover != "takeover" {
+			err = usagef("redundancy: --switchover must be stopdt or takeover")
+		}
 	default:
 		err = usagef("client: unknown operation %s", op)
 	}
@@ -352,27 +398,40 @@ func runClient(op string, a *args) (int, error) {
 	if err := opt.AddRemoteServer("tcp://" + net.JoinHostPort(host, strconv.Itoa(port))); err != nil {
 		return 0, usagef("client: --host %s: %v", host, err)
 	}
-	c := cs104.NewClient(s, opt)
-	c.LogMode(true)
-	c.SetLogProvider(lib)
-	c.SetOnConnectHandler(func(c *cs104.Client) {
-		s.update(func() { s.connected = true })
-		c.SendStartDt()
-	})
-	c.SetServerActiveHandler(func(*cs104.Client) { s.update(func() { s.started = true }) })
-	c.SetConnectionLostHandler(func(c *cs104.Client) {
-		// Without this go-iecp5 dials again half a second later, whatever
-		// SetAutoReconnect says: that only covers a failed dial.
-		_ = c.Close()
-		s.update(func() { s.closed = true })
-	})
+	newClient := func(s *session, lib *libraryLog) *cs104.Client {
+		c := cs104.NewClient(s, opt)
+		c.LogMode(true)
+		c.SetLogProvider(lib)
+		c.SetOnConnectHandler(func(*cs104.Client) { s.update(func() { s.connected = true }) })
+		c.SetServerActiveHandler(func(*cs104.Client) { s.update(func() { s.started = true }) })
+		c.SetConnectionLostHandler(func(c *cs104.Client) {
+			// Without this go-iecp5 dials again half a second later, whatever
+			// SetAutoReconnect says: that only covers a failed dial.
+			_ = c.Close()
+			s.update(func() { s.closed = true })
+		})
+		return c
+	}
+	c := newClient(s, lib)
 	conn := withOriginator{c, oa}
+	// The standby of a redundancy operation.
+	var group *redundancyGroup
+	if op == "redundancy" {
+		ss := &session{changed: make(chan struct{}), also: s}
+		slib := newLibraryLog()
+		group = &redundancyGroup{
+			switchover: switchover, primary: c, ps: s, plog: lib,
+			standby: newClient(ss, slib), ss: ss, slog: slib, oa: oa,
+		}
+	}
 	put := &filePut{ioa: ioa, name: name, size: size, sectionSize: secSz, data: fileOctets(ioa, size)}
 	directory := []object{}
 
 	exitCode := exitOperationFailed
 	stopdt := false
-	operation := func() error {
+	// connect dials and waits for the outcome, which go-iecp5 only logs when
+	// it is a failure.
+	connect := func(c *cs104.Client, s *session, failed <-chan struct{}) error {
 		if err := c.Start(); err != nil {
 			exitCode = exitConnectFailed
 			return failf("connect-failed", "cannot connect to the station: %v", err)
@@ -384,12 +443,25 @@ func runClient(op string, a *args) (int, error) {
 		}()
 		select {
 		case <-up:
-		case <-connectFailed:
+		case <-failed:
 		}
 		if !s.waitFor(func() bool { return s.connected }, 0) {
 			exitCode = exitConnectFailed
 			return failf("connect-failed", "cannot connect to the station")
 		}
+		return nil
+	}
+	operation := func() error {
+		if err := connect(c, s, connectFailed); err != nil {
+			return err
+		}
+		if group != nil {
+			// Both are established before anything is started.
+			if err := connect(group.standby, group.ss, group.slog.seen("connect failed, %v")); err != nil {
+				return err
+			}
+		}
+		c.SendStartDt()
 		if !s.waitFor(func() bool { return s.started }, timeout) {
 			if s.isClosed() {
 				return failf("connection-lost", "connection closed while waiting for STARTDT con")
@@ -408,20 +480,8 @@ func runClient(op string, a *args) (int, error) {
 			if s.isClosed() {
 				return failf("connection-lost", "connection closed while idle")
 			}
-			c.SendStopDt()
-			deadline := time.Now().Add(timeout)
-			for !stopConfirmed(c) {
-				if s.isClosed() {
-					return failf("connection-lost", "connection closed while waiting for STOPDT con")
-				}
-				if time.Now().After(deadline) {
-					return failf("stopdt-timeout", "no STOPDT con from the station")
-				}
-				time.Sleep(5 * time.Millisecond)
-			}
-			// A connection that just dropped also reads as "not active".
-			if s.waitFor(func() bool { return false }, 50*time.Millisecond); s.isClosed() {
-				return failf("connection-lost", "connection closed while waiting for STOPDT con")
+			if err := stopTransfer(c, s, timeout, "stopdt-timeout"); err != nil {
+				return err
 			}
 			stopdt = true
 		case "interrogate":
@@ -509,6 +569,9 @@ func runClient(op string, a *args) (int, error) {
 			err = runFilePut(s, conn, ca, oa, timeout, put)
 		case "file-dir":
 			err = runFileDir(s, conn, ca, oa, timeout, &directory)
+		case "redundancy":
+			err = group.run(ca, timeout)
+			stopdt = group.stopConfirmed
 		default: // monitor
 			s.waitFor(func() bool { return maxASDU > 0 && len(s.asdus) >= maxASDU }, time.Duration(duration)*time.Millisecond)
 			if s.isClosed() {
@@ -528,6 +591,15 @@ func runClient(op string, a *args) (int, error) {
 
 	err = operation()
 	_ = c.Close()
+	if group != nil {
+		_ = group.standby.Close()
+		// Whatever else happened: an I frame outside the time a connection was
+		// started is the error of this operation.
+		if n := group.strayCount(); n > 0 {
+			err = failf("failed", "%d I frames arrived on a connection that was not started", n)
+			exitCode = exitOperationFailed
+		}
+	}
 
 	r := object{
 		"schemaVersion": schemaVersion,
@@ -550,13 +622,16 @@ func runClient(op string, a *args) (int, error) {
 	s.mu.Lock()
 	r["connected"] = s.connected
 	r["startdtConfirmed"] = s.started
-	if op == "connect" {
+	if op == "connect" || op == "redundancy" {
 		r["stopdtConfirmed"] = stopdt
 	}
 	r["confirmations"] = append([]object{}, s.confirmations...)
 	r["terminated"] = s.terminated
 	r["asdus"] = append([]object{}, s.asdus...)
 	s.mu.Unlock()
+	if group != nil {
+		group.report(r)
+	}
 	switch op {
 	case "file-put":
 		r["file"] = put.result()

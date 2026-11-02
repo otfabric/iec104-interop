@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -163,6 +164,7 @@ type peer struct {
 	ca      asdu.CommonAddr
 	oa      uint8
 	timeout time.Duration
+	overTLS bool
 }
 
 func (p *peer) send(cause asdu.Cause, obj asdu.InformationObject) error {
@@ -202,11 +204,15 @@ func (p *peer) termination() error {
 
 // activate sends an activation that ends in a termination.
 func (p *peer) activate(obj asdu.InformationObject) error {
-	p.expect(asdu.TypeOf(obj))
+	var n int
+	p.update(func() {
+		p.expectType, p.terminated = asdu.TypeOf(obj), false
+		n = len(p.confirmations) + 1
+	})
 	if err := p.send(asdu.CauseActivation, obj); err != nil {
 		return err
 	}
-	if err := p.confirmation(1); err != nil {
+	if err := p.confirmation(n); err != nil {
 		return err
 	}
 	return p.termination()
@@ -238,6 +244,20 @@ func (p *peer) read(ioa asdu.IOA) error {
 	defer p.mu.Unlock()
 	if p.negativeCot != 0 {
 		return failf("negative-confirmation", "the station refused the request (cause %d)", p.negativeCot)
+	}
+	return nil
+}
+
+func (p *peer) startDT(ctx context.Context) error {
+	if err := p.client.StartDT(ctx); err != nil {
+		switch {
+		case p.overTLS:
+			// With TLS 1.3 a client learns only here that its certificate was refused.
+			return failf("tls-failed", "no STARTDT con over the TLS session: %v", err)
+		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, iec104.ErrTimeout):
+			return failf("startdt-timeout", "no STARTDT con from the station")
+		}
+		return failf("connection-lost", "the connection closed while waiting for STARTDT con: %v", err)
 	}
 	return nil
 }
@@ -477,6 +497,42 @@ func (d *reachDialer) DialContext(ctx context.Context, network, address string) 
 	return conn, err
 }
 
+// connection is one connection of an operation, not yet established.
+type connection struct {
+	client  *client.Client
+	reached bool
+	ctx     context.Context
+	overTLS bool
+}
+
+// The dial has --connect-timeout-ms and the handshake --timeout-ms.
+func newConnection(address string, connectTimeout, timeout time.Duration, overTLS bool, options []client.Option) (*connection, error) {
+	ctx, stop := context.WithCancel(context.Background())
+	cn := &connection{ctx: ctx, overTLS: overTLS}
+	var err error
+	cn.client, err = client.New(address, append(options, client.WithDialer(&reachDialer{
+		Dialer: net.Dialer{Timeout: connectTimeout},
+		reached: func() {
+			cn.reached = true
+			time.AfterFunc(timeout, stop)
+		}}))...)
+	if err != nil {
+		stop()
+		return nil, err
+	}
+	return cn, nil
+}
+
+func (cn *connection) establish() error {
+	if err := cn.client.Connect(cn.ctx); err != nil {
+		if cn.overTLS && cn.reached {
+			return failf("tls-failed", "no TLS session with the station: %v", err)
+		}
+		return failf("connect-failed", "cannot connect to the station: %v", err)
+	}
+	return nil
+}
+
 // secure waits for the association the endpoint runs once data transfer started.
 func (p *peer) secure(ep *sec.Endpoint) error {
 	deadline := time.NewTimer(p.timeout)
@@ -520,28 +576,23 @@ func runClient(op string, f *flags) int {
 	if secure != nil && transport != nil {
 		f.fail("--tls with --secure is not in the contract")
 	}
-	operation, fileIOA, fileName := parseOperation(op, f)
+	s := &session{changed: make(chan struct{})}
+	var operation func(*peer) error
+	var fileIOA, fileName *int
+	var rd *redundancy
+	if op == "redundancy" {
+		rd = parseRedundancy(f, s)
+		operation = func(p *peer) error { return rd.run(p, func() { s.sleep(collect) }) }
+	} else {
+		operation, fileIOA, fileName = parseOperation(op, f)
+	}
 	if err := f.finish(); err != nil {
 		return usage(err.Error())
 	}
 
-	s := &session{changed: make(chan struct{})}
-	var connected, started, stopped, secured bool
-	// The dial has --connect-timeout-ms and the handshake --timeout-ms.
-	connecting, stopConnecting := context.WithCancel(context.Background())
-	defer stopConnecting()
 	options := []client.Option{
-		client.WithParams(params), client.WithOriginator(oa), client.WithHandler(s),
+		client.WithParams(params), client.WithOriginator(oa),
 		client.WithAutoStart(false), client.WithRequestTimeout(timeout),
-		client.WithDialer(&reachDialer{Dialer: net.Dialer{Timeout: connectTimeout}, reached: func() {
-			connected = true
-			time.AfterFunc(timeout, stopConnecting)
-		}}),
-		client.WithStateHandler(func(state iec104.State, _ error) {
-			if state == iec104.StateDisconnected {
-				s.update(func() { s.closed = true })
-			}
-		}),
 	}
 	var ep *sec.Endpoint
 	if secure != nil {
@@ -554,33 +605,54 @@ func runClient(op string, f *flags) int {
 	if transport != nil {
 		options = append(options, client.WithTLS(transport.client()))
 	}
-	c, err := client.New(net.JoinHostPort(host, strconv.Itoa(port)), options...)
+	open := func(h client.Handler, onState func(iec104.State, error)) (*connection, error) {
+		return newConnection(net.JoinHostPort(host, strconv.Itoa(port)), connectTimeout, timeout, transport != nil,
+			append(slices.Clip(options), client.WithHandler(h), client.WithStateHandler(onState)))
+	}
+
+	var handler client.Handler = s
+	onState := func(state iec104.State, _ error) {
+		if state == iec104.StateDisconnected {
+			s.update(func() { s.closed = true })
+		}
+	}
+	if rd != nil {
+		handler, onState = rd, rd.primaryState
+	}
+	first, err := open(handler, onState)
 	if err != nil {
 		return usage(err.Error())
 	}
-	p := &peer{session: s, client: c, ca: ca, oa: oa, timeout: timeout}
-
-	exit := exitFailed
-	err = func() error {
-		if err := c.Connect(connecting); err != nil {
-			if transport != nil && connected {
-				return failf("tls-failed", "no TLS session with the station: %v", err)
-			}
-			exit = exitConnect
-			return failf("connect-failed", "cannot connect to the station: %v", err)
+	c := first.client
+	p := &peer{session: s, client: c, ca: ca, oa: oa, timeout: timeout, overTLS: transport != nil}
+	var second *connection
+	if rd != nil {
+		if second, err = open(standbyHandler{rd}, rd.standbyState); err != nil {
+			return usage(err.Error())
 		}
+		standby := *p
+		standby.client = second.client
+		rd.standby = &standby
+		rd.closeBoth = func() {
+			_ = second.client.Close()
+			_ = c.Close()
+		}
+	}
 
+	var started, stopped, secured bool
+	err = func() error {
+		if err := first.establish(); err != nil {
+			return err
+		}
+		if second != nil {
+			if err := second.establish(); err != nil {
+				return err
+			}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		if err := c.StartDT(ctx); err != nil {
-			if transport != nil {
-				// With TLS 1.3 a client learns only here that its certificate was refused.
-				return failf("tls-failed", "no STARTDT con over the TLS session: %v", err)
-			}
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, iec104.ErrTimeout) {
-				return failf("startdt-timeout", "no STARTDT con from the station")
-			}
-			return failf("connection-lost", "the connection closed while waiting for STARTDT con: %v", err)
+		if err := p.startDT(ctx); err != nil {
+			return err
 		}
 		started = true
 
@@ -595,13 +667,16 @@ func runClient(op string, f *flags) int {
 		}
 		stopped = op == "connect"
 		s.sleep(collect)
-		exit = exitOK
 		return nil
 	}()
 	// When Close returns, the handler has seen everything that was received.
+	if second != nil {
+		_ = second.client.Close()
+	}
 	_ = c.Close()
 
 	r := object{"schemaVersion": schemaVersion, "adapter": adapterName, "operation": op, "ok": err == nil, "error": nil}
+	exit := exitOK
 	if err != nil {
 		var f *failure
 		if !errors.As(err, &f) {
@@ -612,12 +687,19 @@ func runClient(op string, f *flags) int {
 			f = &failure{code, strings.TrimSpace(err.Error())}
 		}
 		r["error"] = object{"code": f.code, "message": f.message}
+		exit = exitFailed
+		if f.code == "connect-failed" {
+			exit = exitConnect
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	r["connected"], r["startdtConfirmed"] = connected, started
+	r["connected"], r["startdtConfirmed"] = first.reached, started
 	if op == "connect" {
 		r["stopdtConfirmed"] = stopped
+	}
+	if rd != nil {
+		r["stopdtConfirmed"], r["redundancy"] = rd.stopped, rd.result()
 	}
 	if secure != nil {
 		r["secured"] = secured

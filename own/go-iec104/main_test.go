@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/otfabric/go-iec104/apci"
 	"github.com/otfabric/go-iec104/asdu"
 	"github.com/otfabric/go-iec104/client"
 )
@@ -163,6 +165,8 @@ func TestUsageErrors(t *testing.T) {
 		{"client", "file-put", "--host", "h", "--ioa", "1", "--size", "100", "--section-size", "101"},
 		{"client", "file-put", "--host", "h", "--ioa", "1", "--size", "255", "--section-size", "1"},
 		{"client", "file-dir", "--host", "h", "--ioa", "1"},
+		{"client", "redundancy", "--host", "h", "--switchover", "sideways"},
+		{"server", "--redundancy-group", "yes"},
 		{"server", "--tls"},
 		{"server", "--tls-trust", "t"},
 		{"client", "connect", "--host", "h", "--tls"},
@@ -481,6 +485,302 @@ func TestTLSStationThatCannotBeReached(t *testing.T) {
 	if code != exitConnect || errorCode(r) != "connect-failed" || r["connected"] != false {
 		t.Errorf("exit %d, result %v", code, r)
 	}
+}
+
+func asduTypes(t *testing.T, r object) string {
+	t.Helper()
+	var n []string
+	for _, a := range list(r["asdus"]) {
+		n = append(n, fmt.Sprint(a["type"], "/", a["cot"]))
+	}
+	return strings.Join(n, " ")
+}
+
+func TestRedundancyGroup(t *testing.T) {
+	out := capture(t)
+	common := startServer(t, "--redundancy-group")
+	if ready := out.take(t); len(ready) != 1 || ready[0]["redundancyGroup"] != true {
+		t.Fatalf("ready event %v", ready)
+	}
+	interrogation := "C_IC_NA_1/7 M_SP_NA_1/20 M_ME_NC_1/20 M_ST_NA_1/20 M_BO_NA_1/20 M_SP_NA_1/20 C_IC_NA_1/10"
+
+	// The value of the event is the current one.
+	if r, _ := operate(t, out, common, "command", "--type", "C_SC_NA_1", "--ioa", "1000", "--value", "false"); r["ok"] != true {
+		t.Fatalf("result %v", r)
+	}
+
+	t.Run("a connection that ends queues nothing", func(t *testing.T) {
+		r, _ := operate(t, out, common, "monitor", "--duration-ms", "200")
+		if len(list(r["asdus"])) != 0 {
+			t.Errorf("result %v", r)
+		}
+	})
+
+	t.Run("stopdt", func(t *testing.T) {
+		code := run(append(append([]string{"client", "redundancy"}, common...), "--collect-ms", "10"))
+		var r object
+		for _, d := range out.take(t) {
+			if _, isEvent := d["event"]; !isEvent {
+				r = d
+			}
+		}
+		if code != exitOK || r["startdtConfirmed"] != true || r["stopdtConfirmed"] != true || r["terminated"] != true {
+			t.Fatalf("exit %d, result %v", code, r)
+		}
+		want := interrogation + " M_SP_NA_1/3 " + interrogation
+		if got := asduTypes(t, r); got != want {
+			t.Errorf("asdus %s, want %s", got, want)
+		}
+		if got := fmt.Sprint(r["redundancy"]); got != "map[primaryAsdus:7 queuedEvent:true standbyAsdus:8 strayAsdus:0 switchover:stopdt]" {
+			t.Errorf("redundancy %s", got)
+		}
+		if got := len(list(r["confirmations"])); got != 2 {
+			t.Errorf("%d confirmations", got)
+		}
+		event := list(list(r["asdus"])[7]["objects"])[0]
+		if event["ioa"] != float64(100) || event["value"] != false || fmt.Sprint(event["quality"]) != "[BL]" {
+			t.Errorf("event %v", event)
+		}
+	})
+
+	// The STOPDT at the end of that run queued one event, so this start gets it.
+	// With no connection to send it to, it waited.
+	t.Run("the queue waits for the next connection", func(t *testing.T) {
+		r, _ := operate(t, out, common, "connect", "--hold-ms", "100")
+		if got := asduTypes(t, r); got != "M_SP_NA_1/3" {
+			t.Errorf("asdus %s", got)
+		}
+	})
+}
+
+func TestRedundancyTakeover(t *testing.T) {
+	out := capture(t)
+	common := startServer(t, "--redundancy-group")
+	out.take(t)
+	interrogation := "C_IC_NA_1/7 M_SP_NA_1/20 M_ME_NC_1/20 M_ST_NA_1/20 M_BO_NA_1/20 M_SP_NA_1/20 C_IC_NA_1/10"
+	// The STOPDT at step 7 queues an event, which the primary of a takeover must
+	// not get: --collect-ms gives it the time.
+	code := run(append(append([]string{"client", "redundancy"}, common...), "--switchover", "takeover", "--collect-ms", "200"))
+	var r object
+	for _, d := range out.take(t) {
+		if _, isEvent := d["event"]; !isEvent {
+			r = d
+		}
+	}
+	if code != exitOK {
+		t.Fatalf("exit %d, result %v", code, r)
+	}
+	if got := asduTypes(t, r); got != interrogation+" "+interrogation {
+		t.Errorf("asdus %s", got)
+	}
+	if got := fmt.Sprint(r["redundancy"]); got != "map[primaryAsdus:7 queuedEvent:false standbyAsdus:7 strayAsdus:0 switchover:takeover]" {
+		t.Errorf("redundancy %s", got)
+	}
+}
+
+func TestRedundancyNothingOnAConnectionTakenOver(t *testing.T) {
+	out := capture(t)
+	common := startServer(t, "--redundancy-group")
+	out.take(t)
+	addr := net.JoinHostPort(common[1], common[3])
+	got := make(chan *asdu.ASDU, 64)
+	primary, err := client.New(addr, client.WithHandler(client.HandlerFunc(func(a *asdu.ASDU) { got <- a })))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = primary.Close() }()
+	if err := primary.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	standby, err := client.New(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = standby.Close() }()
+	if err := standby.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Both have started, as the station saw it.
+	started := 0
+	for deadline := time.Now().Add(3 * time.Second); started < 2; time.Sleep(5 * time.Millisecond) {
+		for _, d := range out.take(t) {
+			if d["event"] == "data-transfer-started" {
+				started++
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no data-transfer-started events")
+		}
+	}
+	// The primary's link stays started, so the request goes out and the station
+	// must not answer it.
+	if err := primary.Send(context.Background(), asdu.New(asdu.CauseActivation, 1, asdu.Interrogation{Qualifier: asdu.QOIStation})); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case a := <-got:
+		t.Errorf("the station sent %s", a)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func TestRedundancyWithoutAGroup(t *testing.T) {
+	out := capture(t)
+	common := startServer(t)
+	out.take(t)
+	code := run(append(append([]string{"client", "redundancy"}, common...), "--timeout-ms", "300"))
+	var r object
+	for _, d := range out.take(t) {
+		if _, isEvent := d["event"]; !isEvent {
+			r = d
+		}
+	}
+	if code != exitFailed || errorCode(r) != "timeout" || r["terminated"] != true {
+		t.Fatalf("exit %d, result %v", code, r)
+	}
+	if got := fmt.Sprint(r["redundancy"]); got != "map[primaryAsdus:7 queuedEvent:false standbyAsdus:0 strayAsdus:0 switchover:stopdt]" {
+		t.Errorf("redundancy %s", got)
+	}
+}
+
+// strayStation is a station with two connections that answers STARTDT, STOPDT and
+// an interrogation, and calls stray with each connection and U frame it confirmed.
+// send puts an I frame with a spontaneous single point on a connection.
+type strayStation struct {
+	mu    sync.Mutex
+	conns []*strayConn
+	stray func(st *strayStation, conn int, confirmed apci.UFunction)
+}
+
+type strayConn struct {
+	net.Conn
+	vs, vr uint16
+}
+
+func (c *strayConn) frame(t *testing.T, f apci.Frame) {
+	b, err := f.AppendBinary(nil)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	_, _ = c.Write(b)
+}
+
+func (c *strayConn) asdu(t *testing.T, a *asdu.ASDU) {
+	raw, err := a.Encode(asdu.IEC104)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	c.frame(t, apci.NewI(c.vs, c.vr, raw))
+	c.vs++
+}
+
+func (st *strayStation) send(t *testing.T, conn int) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.conns[conn].asdu(t, asdu.New(asdu.CauseSpontaneous, 1, asdu.SinglePoint{IOA: 100, Value: true}))
+}
+
+func (st *strayStation) serve(t *testing.T, c *strayConn, index int) {
+	defer func() { _ = c.Close() }()
+	for {
+		head := make([]byte, 2)
+		if _, err := io.ReadFull(c, head); err != nil {
+			return
+		}
+		body := make([]byte, head[1])
+		if _, err := io.ReadFull(c, body); err != nil {
+			return
+		}
+		switch {
+		case body[0]&1 == 0: // I
+			st.mu.Lock()
+			c.vr++
+			a := asdu.New(asdu.CauseActivationCon, 1, asdu.Interrogation{Qualifier: asdu.QOIStation})
+			c.asdu(t, a)
+			a.Cause = asdu.CauseActivationTerm
+			c.asdu(t, a)
+			st.mu.Unlock()
+		case body[0]&3 == 3: // U
+			var con, act apci.UFunction
+			switch body[0] {
+			case 0x07:
+				act, con = apci.StartDTAct, apci.StartDTCon
+			case 0x13:
+				act, con = apci.StopDTAct, apci.StopDTCon
+			default:
+				continue
+			}
+			c.frame(t, apci.NewU(con))
+			st.stray(st, index, act)
+		}
+	}
+}
+
+// strayRun runs the operation against such a station.
+func strayRun(t *testing.T, stray func(*strayStation, int, apci.UFunction), args ...string) (int, object) {
+	t.Helper()
+	out := capture(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	st := &strayStation{stray: stray}
+	go func() {
+		for i := 0; ; i++ {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c := &strayConn{Conn: conn}
+			st.mu.Lock()
+			st.conns = append(st.conns, c)
+			st.mu.Unlock()
+			go st.serve(t, c, i)
+		}
+	}()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	code, r := attempt(t, out, []string{"--host", "127.0.0.1", "--port", port, "--timeout-ms", "500"}, "redundancy", args...)
+	return code, r
+}
+
+func TestRedundancyStrays(t *testing.T) {
+	check := func(t *testing.T, code int, r object) {
+		t.Helper()
+		if code != exitFailed || errorCode(r) != "failed" {
+			t.Errorf("exit %d, result %v", code, r)
+		}
+		if n := r["redundancy"].(object)["strayAsdus"].(float64); n < 1 {
+			t.Errorf("result %v", r)
+		}
+	}
+	t.Run("standby before its STARTDT", func(t *testing.T) {
+		code, r := strayRun(t, func(st *strayStation, conn int, fn apci.UFunction) {
+			if conn == 0 && fn == apci.StartDTAct {
+				st.send(t, 1)
+			}
+		})
+		check(t, code, r)
+	})
+	t.Run("primary after STOPDT con", func(t *testing.T) {
+		code, r := strayRun(t, func(st *strayStation, conn int, fn apci.UFunction) {
+			if conn == 0 && fn == apci.StopDTAct {
+				st.send(t, 0)
+			}
+		})
+		check(t, code, r)
+	})
+	t.Run("primary after a takeover", func(t *testing.T) {
+		code, r := strayRun(t, func(st *strayStation, conn int, fn apci.UFunction) {
+			if conn == 1 && fn == apci.StartDTAct {
+				time.Sleep(50 * time.Millisecond)
+				st.send(t, 0)
+			}
+		}, "--switchover", "takeover")
+		check(t, code, r)
+	})
 }
 
 func TestAgainstOwnServer(t *testing.T) {

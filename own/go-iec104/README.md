@@ -69,9 +69,18 @@ make -f own/go-iec104/Makefile image smoke interop    # from the repository root
 
 ## What it cannot do
 
-Declared `false`:
+Everything in the contract is implemented and declared `true`.
 
-The contract also has no way to reach this part of go-iec104, so it is not
-exposed: redundancy groups.
+With `server --redundancy-group`, a STARTDT that takes over from a started
+connection leaves the old link started inside go-iec104: only queued events stop
+going to it, and they go back to it when the connection that took over stops. The
+adapter therefore keeps the queued event until a connection starts, and ignores the
+requests of such a connection, so that nothing is sent on it, except an answer that
+was already being sent at that moment. A STARTDT act on it is then confirmed by the
+library without making it the started connection again; a STOPDT act first does
+that.
 
-Everything else in the contract is implemented and declared `true`.
+`client redundancy` runs each step itself with two clients, not with
+`client.Group`. go-iec104 closes a connection on an I frame outside its started
+time, before any handler sees it. That counts as one stray, however many the
+station sent, and the frame is not in `asdus`.

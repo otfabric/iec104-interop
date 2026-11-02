@@ -11,7 +11,7 @@
     "adapter": { "type": "string" },
     "operation": {
       "enum": ["connect", "interrogate", "counter-interrogate", "read", "clock-sync", "test-command", "command",
-               "monitor", "file-get", "file-put", "file-dir"]
+               "monitor", "file-get", "file-put", "file-dir", "redundancy"]
     },
     "ok": { "type": "boolean" },
     "error": {
@@ -60,6 +60,18 @@
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
       }
     },
+    "redundancy": {
+      "description": "redundancy only: what each connection saw.",
+      "type": "object",
+      "required": ["switchover", "primaryAsdus", "standbyAsdus", "strayAsdus", "queuedEvent"],
+      "properties": {
+        "switchover": { "enum": ["stopdt", "takeover"] },
+        "primaryAsdus": { "type": "integer", "minimum": 0 },
+        "standbyAsdus": { "type": "integer", "minimum": 0 },
+        "strayAsdus": { "type": "integer", "minimum": 0 },
+        "queuedEvent": { "type": "boolean" }
+      }
+    },
     "directory": {
       "description": "file-dir only: the entries received, in order.",
       "type": "array",
@@ -80,6 +92,7 @@
   "allOf": [
     { "if": { "properties": { "operation": { "enum": ["file-get", "file-put"] } } }, "then": { "required": ["file"] } },
     { "if": { "properties": { "operation": { "const": "file-dir" } } }, "then": { "required": ["directory"] } },
+    { "if": { "properties": { "operation": { "const": "redundancy" } } }, "then": { "required": ["redundancy"] } },
     { "if": { "properties": { "ok": { "const": true } } }, "then": { "properties": { "error": { "type": "null" } } },
       "else": { "properties": { "error": { "type": "object" } } } }
   ],
