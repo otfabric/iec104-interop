@@ -29,6 +29,8 @@ type station struct {
 	fx     *fixture
 	ca     asdu.CommonAddr
 	params *asdu.Params
+	// The downloads in progress; a file is sent on the connection that selected it.
+	transfers map[transferKey]*transfer
 }
 
 func event(name string) object { return object{"event": name} }
@@ -62,7 +64,7 @@ func runServer(a *args) (int, error) {
 	_ = os.Remove(readyFile)
 
 	params := *asdu.ParamsWide // time tags are UTC on the wire
-	st := &station{fx: fx, ca: asdu.CommonAddr(fx.Station.CommonAddr), params: &params}
+	st := &station{fx: fx, ca: asdu.CommonAddr(fx.Station.CommonAddr), params: &params, transfers: map[transferKey]*transfer{}}
 	lib := newLibraryLog()
 	listening, failed := lib.seen("server run"), lib.seen("server run failed, %v")
 
@@ -76,6 +78,7 @@ func runServer(a *args) (int, error) {
 		emit(e)
 	})
 	srv.SetConnectionLostHandler(func(c asdu.Connect) {
+		st.abandonTransfers(c)
 		e := event("connection-closed")
 		e["peer"] = peer(c)
 		emit(e)
@@ -368,6 +371,10 @@ func (s *station) OnASDU(c asdu.Connect, pack *asdu.ASDU) error {
 			return nil
 		}
 		s.command(c, request, pack)
+	case asdu.F_SC_NA_1:
+		s.fileCall(c, request, pack)
+	case asdu.F_AF_NA_1:
+		s.fileAck(c, request, pack)
 	default:
 		s.reject(c, request, asdu.UnknownTypeID)
 	}

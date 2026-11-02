@@ -66,6 +66,24 @@ final class Codec {
     private Codec() {
     }
 
+    /** The sum of the octets modulo 256. */
+    static int checksum(byte[] b, int from, int to) {
+        int sum = 0;
+        for (int i = from; i < to; i++) {
+            sum += b[i];
+        }
+        return sum & 0xFF;
+    }
+
+    /** The content of a file as a fixture defines it: octet i is (i + ioa) mod 251. */
+    static byte[] fixtureContent(int ioa, int size) {
+        byte[] b = new byte[size];
+        for (int i = 0; i < size; i++) {
+            b[i] = (byte) ((i + ioa) % 251);
+        }
+        return b;
+    }
+
     static String formatTime(long ms) {
         return TIME.format(Instant.ofEpochMilli(ms));
     }

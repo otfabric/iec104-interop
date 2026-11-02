@@ -119,9 +119,12 @@ func printCapabilities() int {
 			"tls":                     false,
 			// The server has no hook for STARTDT and STOPDT.
 			"dataTransferEvents": false,
-			// No file transfer procedure, and F_SG_NA_1 is dropped on reception.
+			// F_SG_NA_1 has no size in go-iecp5 and is dropped on reception, so
+			// anything that needs a segment to arrive is out. A station only
+			// sends segments: it receives F_SC_NA_1 and F_AF_NA_1, and the
+			// adapter runs the procedure itself.
 			"fileTransfer": false,
-			"fileServer":   false,
+			"fileServer":   true,
 			"fileClient":   false,
 			// No IEC 62351-5.
 			"secureAuthentication": false,

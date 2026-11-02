@@ -49,6 +49,19 @@ final class Fixture {
         boolean selected;
     }
 
+    /** A file of the station: see docs/FIXTURES.md. */
+    static final class FileSpec {
+        int ioa;
+        int name;
+        int size;
+        int sectionSize;
+
+        /** Octet i is (i + ioa) mod 251. */
+        byte[] content() {
+            return Codec.fixtureContent(ioa, size);
+        }
+    }
+
     static final Map<ASduType, ASduType> COMMAND_TARGET = Map.of(
             ASduType.C_SC_NA_1, ASduType.M_SP_NA_1,
             ASduType.C_DC_NA_1, ASduType.M_DP_NA_1,
@@ -66,6 +79,7 @@ final class Fixture {
     /** Sorted by address. */
     final List<Point> points = new ArrayList<>();
     final List<Command> commands = new ArrayList<>();
+    final List<FileSpec> files = new ArrayList<>();
 
     Point point(int ioa) {
         for (Point p : points) {
@@ -274,8 +288,6 @@ final class Fixture {
             }
         }
 
-        // Files are validated like everywhere else, although this adapter's
-        // server does not serve them (capability fileServer is false).
         JsonElement files = root.get("files");
         if (files != null) {
             if (!files.isJsonArray()) {
@@ -294,7 +306,14 @@ final class Fixture {
                 if (!seen.add(ioa) || fx.point(ioa) != null || fx.command(ioa) != null) {
                     throw new InvalidException("file " + ioa + ": duplicate information object address");
                 }
+                FileSpec f = new FileSpec();
+                f.ioa = ioa;
+                f.name = o.get("name").getAsInt();
+                f.size = o.get("size").getAsInt();
+                f.sectionSize = o.get("sectionSize").getAsInt();
+                fx.files.add(f);
             }
+            fx.files.sort(Comparator.comparingInt(f -> f.ioa));
         }
         return fx;
     }

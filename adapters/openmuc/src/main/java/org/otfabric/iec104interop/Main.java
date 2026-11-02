@@ -141,10 +141,16 @@ public final class Main {
         f.addProperty("tls", false);
         // The server reports STARTDT and STOPDT as events.
         f.addProperty("dataTransferEvents", true);
-        // The client can download a file; the server does not serve files.
         f.addProperty("fileTransfer", true);
-        f.addProperty("fileServer", false);
+        // j60870 has no procedure of file transfer; the adapter runs it (FileStation).
+        f.addProperty("fileServer", true);
         f.addProperty("fileClient", true);
+        f.addProperty("fileUploadServer", false);
+        f.addProperty("fileUploadClient", false);
+        f.addProperty("fileDirectoryServer", false);
+        f.addProperty("fileDirectoryClient", false);
+        f.addProperty("redundancyServer", false);
+        f.addProperty("redundancyClient", false);
         f.addProperty("secureAuthentication", false);
         c.add("features", f);
 

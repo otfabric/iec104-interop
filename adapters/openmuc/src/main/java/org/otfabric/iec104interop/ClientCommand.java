@@ -183,14 +183,6 @@ final class ClientCommand implements ConnectionEventListener {
         }
     }
 
-    private static int checksum(byte[] b, int from, int to) {
-        int sum = 0;
-        for (int i = from; i < to; i++) {
-            sum += b[i];
-        }
-        return sum & 0xFF;
-    }
-
     /** Select, call, receive and acknowledge one file. See docs/CONTAINER_CONTRACT.md. */
     private void download(Connection c, int ca, int ioa, int nof, int timeoutMs, Download d)
             throws Failure, IOException {
@@ -229,7 +221,7 @@ final class ClientCommand implements ConnectionEventListener {
                 }
                 // Last section: the checksum covers the whole file.
                 byte[] all = d.data.toByteArray();
-                boolean good = checksum(all, 0, all.length) == ((org.openmuc.j60870.ie.IeChecksum) e[3]).getValue()
+                boolean good = Codec.checksum(all, 0, all.length) == ((org.openmuc.j60870.ie.IeChecksum) e[3]).getValue()
                         && all.length == d.length;
                 c.ackFileOrSection(ca, ioa, name, (org.openmuc.j60870.ie.IeNameOfSection) e[1],
                         new org.openmuc.j60870.ie.IeAckFileOrSectionQualifier(good ? 1 : 2, 0));
@@ -264,7 +256,7 @@ final class ClientCommand implements ConnectionEventListener {
                     throw new Failure("failed", "expected a segment or last segment, got " + a.getTypeIdentification());
                 }
                 byte[] all = d.data.toByteArray();
-                boolean good = checksum(all, sectionStart, all.length) == ((org.openmuc.j60870.ie.IeChecksum) e[3])
+                boolean good = Codec.checksum(all, sectionStart, all.length) == ((org.openmuc.j60870.ie.IeChecksum) e[3])
                         .getValue() && all.length - sectionStart == sectionLength;
                 c.ackFileOrSection(ca, ioa, name, nos,
                         new org.openmuc.j60870.ie.IeAckFileOrSectionQualifier(good ? 3 : 4, 0));

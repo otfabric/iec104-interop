@@ -90,6 +90,15 @@ func (fx *fixture) command(ioa int) *command {
 	return nil
 }
 
+func (fx *fixture) file(ioa, name int) *fileSpec {
+	for i := range fx.Files {
+		if f := &fx.Files[i]; f.IOA == ioa && f.Name == name {
+			return f
+		}
+	}
+	return nil
+}
+
 func integer(v any, lo, hi float64) (float64, bool) {
 	f, ok := v.(float64)
 	return f, ok && f == math.Trunc(f) && f >= lo && f <= hi
@@ -191,8 +200,6 @@ func loadFixture(path string) (*fixture, error) {
 			return nil, fmt.Errorf("command %d: reportCause must be 3 or 11", c.IOA)
 		}
 	}
-	// Files are validated like everywhere else, although this adapter does
-	// not serve them (capability fileServer is false).
 	for i, f := range fx.Files {
 		if f.IOA < 1 || f.IOA > 0xFFFFFF || f.Name < 1 || f.Name > 255 || f.Size < 1 || f.Size > 65536 ||
 			f.SectionSize < 1 || f.SectionSize > f.Size {

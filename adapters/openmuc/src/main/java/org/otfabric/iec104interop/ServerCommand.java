@@ -45,9 +45,11 @@ final class ServerCommand {
     private static final CauseOfTransmission UNKNOWN_IOA = CauseOfTransmission.causeFor(47);
 
     private final Fixture fx;
+    private final FileStation fileStation;
 
     private ServerCommand(Fixture fx) {
         this.fx = fx;
+        this.fileStation = new FileStation(fx);
     }
 
     private static JsonObject event(String name) {
@@ -162,10 +164,12 @@ final class ServerCommand {
     }
 
     private final class Session implements ConnectionEventListener {
+        private final FileStation.Link files = fileStation.new Link();
+
         @Override
         public void newASdu(Connection connection, ASdu asdu) {
             try {
-                handle(connection, asdu);
+                handle(connection, asdu, files);
             } catch (IOException e) {
                 Main.log("send failed: " + e);
             } catch (RuntimeException e) {
@@ -179,6 +183,7 @@ final class ServerCommand {
                 // j60870 wraps what went wrong in its reader; a plain close has no cause.
                 Main.log("connection closed: " + cause.getCause());
             }
+            files.closed();
             JsonObject e = event("connection-closed");
             e.addProperty("peer", peer(connection));
             Main.emit(e);
@@ -205,7 +210,7 @@ final class ServerCommand {
         return oa == null ? 0 : oa;
     }
 
-    private void handle(Connection c, ASdu asdu) throws IOException {
+    private void handle(Connection c, ASdu asdu, FileStation.Link files) throws IOException {
         ASduType wire = asdu.getTypeIdentification();
         ASduType type = Codec.baseType(wire);
         int ca = asdu.getCommonAddress();
@@ -266,6 +271,20 @@ final class ServerCommand {
                 return;
             }
             command(c, asdu, wire, type);
+            return;
+        case F_SC_NA_1:
+            if (cot != CauseOfTransmission.FILE_TRANSFER) {
+                reject(c, asdu, UNKNOWN_COT);
+                return;
+            }
+            files.call(c, asdu);
+            return;
+        case F_AF_NA_1:
+            if (cot != CauseOfTransmission.FILE_TRANSFER) {
+                reject(c, asdu, UNKNOWN_COT);
+                return;
+            }
+            files.acknowledged(c, asdu);
             return;
         default:
             reject(c, asdu, UNKNOWN_TYPE);
