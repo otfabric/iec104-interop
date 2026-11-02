@@ -41,13 +41,14 @@ same fixture the same way; this document says what "the same way" is.
 | `quality` | Optional array of flags; absent means good |
 | `transient` | `M_ST_NA_1` only |
 | `sequence` | `M_IT_NA_1` only, 0..31 |
+| `groups` | Optional array of interrogation groups, 1..16, unique. Not on `M_IT_NA_1`, which an interrogation does not report |
 
 | `type` | `value` | `quality` flags |
 |--------|---------|-----------------|
 | `M_SP_NA_1` | boolean | `BL` `SB` `NT` `IV` |
 | `M_DP_NA_1` | 0..3 | `BL` `SB` `NT` `IV` |
 | `M_ST_NA_1` | -64..63 | `OV` `BL` `SB` `NT` `IV` |
-| `M_BO_NA_1` | 0..4294967295 | none (lib60870 cannot set one) |
+| `M_BO_NA_1` | 0..4294967295 | `OV` `BL` `SB` `NT` `IV`, with the feature `pointQualityOnBitstring` |
 | `M_ME_NA_1` | raw NVA, -32768..32767 | `OV` `BL` `SB` `NT` `IV` |
 | `M_ME_NB_1` | -32768..32767 | `OV` `BL` `SB` `NT` `IV` |
 | `M_ME_NC_1` | number | `OV` `BL` `SB` `NT` `IV` |
@@ -116,12 +117,17 @@ like the others in this table, produces no server event.
 What a station answers to a *system* command with an unexpected cause is left
 to the adapter's library and is not part of the fixture behaviour.
 
-### General interrogation (C_IC_NA_1)
+### Interrogation (C_IC_NA_1)
 
 | Request | Answer |
 |---------|--------|
 | QOI 20 | Activation confirmation; every point that is not an integrated total, with cause 20; activation termination |
+| QOI 21..36, group `QOI - 20` has a point in `groups` | Activation confirmation; the points of that group, with cause `QOI`; activation termination. Only with the feature `groupInterrogation` |
 | Any other QOI | Negative activation confirmation |
+
+An adapter without `groupInterrogation` refuses a fixture with `groups` (exit 4).
+A fixture without `groups` has no group to serve, so every adapter refuses
+QOI 21..36 on it; the baseline fixture is such a fixture.
 
 Points are sent without time tag, in ascending address order. Consecutive
 points of the same type share an ASDU (SQ = 0); a change of type starts a new
@@ -235,13 +241,34 @@ Station 1.
 | 30000 | 1 | 1000 | 1000 | 1 | `85e6f8dae1836546d45697e6d939234bc7fe5f31862f863af71e52bc223adbde` |
 | 30001 | 1 | 5000 | 2048 | 3 | `149c48d73a2f7159a1ad298d2ca582fa1773635c6ed071a8b25fc46e915f01c8` |
 
+## The extended fixture
+
+Station 1. What the baseline does not have and old images do not know: read it
+from the image with `print-fixture extended`, after checking the features it
+needs. Its station serves the requests of this document like the baseline's.
+
+| IOA | Type | Value | Quality | Groups |
+|----:|------|-------|---------|--------|
+| 100 | `M_SP_NA_1` | true | | 1 |
+| 101 | `M_DP_NA_1` | 2 (on) | | 1 |
+| 103 | `M_BO_NA_1` | 2863311530 (0xAAAAAAAA) | | 2 |
+| 104 | `M_BO_NA_1` | 1431655765 (0x55555555) | OV, IV | 2 |
+| 105 | `M_BO_NA_1` | 4042322160 (0xF0F0F0F0) | BL, SB, NT | 2, 3 |
+| 200 | `M_ME_NB_1` | 1234 | | 3, 16 |
+| 202 | `M_ME_NC_1` | 230.5 | | |
+| 300 | `M_IT_NA_1` | 123456, sequence 1 | | |
+
+| IOA | Command | Target |
+|----:|---------|-------:|
+| 500 | `C_SC_NA_1` | 100 |
+
 ## Adding a fixture
 
 1. Create `fixtures/<name>/fixture.json`; `name` must equal the directory.
 2. `make validate`.
 3. Use only types and features every published adapter declares
-   ([CAPABILITIES.md](CAPABILITIES.md)); a fixture must not need
-   adapter-specific behaviour.
+   ([CAPABILITIES.md](CAPABILITIES.md)), or say in this document which features
+   the fixture needs; a fixture must not need adapter-specific behaviour.
 4. Rebuild the images (`make images`): fixtures are baked in.
 5. If the fixture is meant for the self-tests, add cases for it; a fixture
    nothing exercises is not verified.

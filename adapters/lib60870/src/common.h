@@ -48,6 +48,7 @@ typedef struct {
     bool transient;         /* M_ST_NA_1 */
     int sequence;           /* M_IT_NA_1 */
     uint8_t quality;        /* QDS bits; for M_IT_NA_1: CY 0x20, CA 0x40, IV 0x80 */
+    uint32_t groups;        /* interrogation groups: bit g - 1 for group g */
 } Point;
 
 typedef struct {

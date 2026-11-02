@@ -137,6 +137,13 @@ NORMALIZE='del(.adapter, .elapsedMs, .error.message) | (.asdus[]?.objects[]? |= 
 # shellcheck disable=SC2034
 SUMMARY='"ok=\(.ok) error=\(.error.code // "-") conf=\([.confirmations[] | "\(.cot)\(if .negative then "n" else "" end)"] | join(",")) term=\(.terminated) asdus=\([.asdus[] | "\(.type // .typeId)/\(.cot)"] | join(","))"'
 
+# The same with what tests/feature-cases.tsv also states.
+# shellcheck disable=SC2034
+FEATURE_SUMMARY="${SUMMARY}"' + (if has("tls") then " tls=\(.tls)" else "" end)
+    + (if has("file") then " file=\(.file.length)/\(.file.received)/\(.file.sections)" else "" end)
+    + (if has("directory") then " directory=\([.directory[] | "\(.ioa):\(.nof):\(.lof):\(.sof)"] | join(","))" else "" end)
+    + (if has("redundancy") then " redundancy=\(.redundancy.primaryAsdus)/\(.redundancy.standbyAsdus)/\(.redundancy.strayAsdus)/\(.redundancy.queuedEvent)" else "" end)'
+
 KNOWN=0
 
 finish() {

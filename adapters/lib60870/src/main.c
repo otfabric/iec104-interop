@@ -57,7 +57,7 @@ int printCapabilities(void)
 
     cJSON* f = cJSON_AddObjectToObject(c, "features");
     cJSON_AddTrueToObject(f, "generalInterrogation");
-    cJSON_AddFalseToObject(f, "groupInterrogation");
+    cJSON_AddTrueToObject(f, "groupInterrogation");
     cJSON_AddTrueToObject(f, "counterInterrogation");
     cJSON_AddTrueToObject(f, "read");
     cJSON_AddTrueToObject(f, "clockSync");
@@ -71,7 +71,7 @@ int printCapabilities(void)
     cJSON_AddTrueToObject(f, "multipleConnections");
     /* The server reports STARTDT and STOPDT as events. */
     cJSON_AddTrueToObject(f, "dataTransferEvents");
-    cJSON_AddFalseToObject(f, "pointQualityOnBitstring");
+    cJSON_AddTrueToObject(f, "pointQualityOnBitstring");
     cJSON_AddFalseToObject(f, "tls");
     cJSON_AddTrueToObject(f, "fileTransfer");
     cJSON_AddTrueToObject(f, "fileServer");

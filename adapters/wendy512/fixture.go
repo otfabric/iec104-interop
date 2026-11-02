@@ -22,6 +22,7 @@ type point struct {
 	Transient *bool    `json:"transient"`
 	Sequence  *int     `json:"sequence"`
 	Quality   []string `json:"quality"`
+	Groups    []int    `json:"groups"`
 
 	typ   asdu.TypeID
 	value float64 // raw NVA for M_ME_NA_1; 0 or 1 for M_SP_NA_1
@@ -90,6 +91,24 @@ func (fx *fixture) command(ioa int) *command {
 	return nil
 }
 
+func (p *point) inGroup(group int) bool {
+	for _, g := range p.Groups {
+		if g == group {
+			return true
+		}
+	}
+	return false
+}
+
+func (fx *fixture) hasGroup(group int) bool {
+	for _, p := range fx.Points {
+		if p.inGroup(group) {
+			return true
+		}
+	}
+	return false
+}
+
 func (fx *fixture) file(ioa, name int) *fileSpec {
 	for i := range fx.Files {
 		if f := &fx.Files[i]; f.IOA == ioa && f.Name == name {
@@ -108,8 +127,6 @@ func allowedQuality(t asdu.TypeID) string {
 	switch t {
 	case asdu.M_SP_NA_1, asdu.M_DP_NA_1:
 		return "BL SB NT IV"
-	case asdu.M_BO_NA_1:
-		return "" // kept empty for every adapter: lib60870 cannot set it
 	case asdu.M_IT_NA_1:
 		return "CY CA IV"
 	default:
@@ -176,6 +193,16 @@ func loadFixture(path string) (*fixture, error) {
 			if len(q) != 2 || !containsWord(allowed, q) {
 				return nil, fmt.Errorf("point %d: quality is not valid for %s", p.IOA, p.Type)
 			}
+		}
+		if len(p.Groups) > 0 && p.typ == asdu.M_IT_NA_1 {
+			return nil, fmt.Errorf("point %d: an interrogation does not report an integrated total", p.IOA)
+		}
+		groups := map[int]bool{}
+		for _, g := range p.Groups {
+			if g < 1 || g > 16 || groups[g] {
+				return nil, fmt.Errorf("point %d: groups are unique and 1..16", p.IOA)
+			}
+			groups[g] = true
 		}
 	}
 	sort.Slice(fx.Points, func(i, j int) bool { return fx.Points[i].IOA < fx.Points[j].IOA })

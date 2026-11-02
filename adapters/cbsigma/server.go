@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -260,14 +261,14 @@ func (s *station) pointASDU(pts []*point, timed bool, cause iec.Cause, oa uint8)
 	return a
 }
 
-// sendPoints sends the integrated totals (counters) or everything else, in
-// ascending address order, consecutive points of one type sharing an ASDU.
-func (s *station) sendPoints(ctx context.Context, c *conn, cause iec.Cause, oa uint8, counters bool) {
+// sendPoints sends the points selected, in ascending address order,
+// consecutive points of one type sharing an ASDU.
+func (s *station) sendPoints(ctx context.Context, c *conn, cause iec.Cause, oa uint8, selected func(*point) bool) {
 	var out []*iec.ASDU
 	var batch []*point
 	s.mu.Lock()
 	for _, p := range s.fx.Points {
-		if (p.typ == iec.MItNa1) != counters {
+		if !selected(p) {
 			continue
 		}
 		if len(batch) > 0 && (p.typ != batch[0].typ || len(batch) >= maxObjects) {
@@ -320,13 +321,19 @@ func (s *station) handle(ctx context.Context, c *conn, raw []byte) {
 			return
 		}
 		qoi := int(a.Objects[0].Value)
-		accepted := qoi == 20
+		group := qoi - 20
+		accepted := qoi == 20 || group >= 1 && group <= 16 && s.fx.hasGroup(group)
 		e := event("interrogation")
 		e["commonAddress"], e["qoi"], e["accepted"] = int(a.CA), qoi, accepted
 		emit(e)
 		reply(iec.CauseActCon, !accepted)
 		if accepted {
-			s.sendPoints(ctx, c, iec.CauseInterrogated, a.Orig, false)
+			s.sendPoints(ctx, c, iec.Cause(qoi), a.Orig, func(p *point) bool {
+				if group == 0 {
+					return p.typ != iec.MItNa1
+				}
+				return slices.Contains(p.Groups, group)
+			})
 			reply(iec.CauseActTerm, false)
 		}
 	case iec.CCiNa1:
@@ -342,7 +349,7 @@ func (s *station) handle(ctx context.Context, c *conn, raw []byte) {
 		emit(e)
 		reply(iec.CauseActCon, !accepted)
 		if accepted {
-			s.sendPoints(ctx, c, iec.CauseCounterGen, a.Orig, true)
+			s.sendPoints(ctx, c, iec.CauseCounterGen, a.Orig, func(p *point) bool { return p.typ == iec.MItNa1 })
 			reply(iec.CauseActTerm, false)
 		}
 	case iec.CRdNa1:

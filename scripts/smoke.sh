@@ -51,6 +51,8 @@ if [[ $(wc -l <<<"${caps}") -eq 1 ]]; then ok "print-capabilities is one line"; 
 # ---- the baked fixture is the repository's ----
 if diff -q <(docker run --rm "${IMAGE}" print-fixture baseline 2>/dev/null) "${ROOT}/fixtures/baseline/fixture.json" >/dev/null
 then ok "print-fixture baseline"; else fail "print-fixture baseline differs from fixtures/baseline/fixture.json"; fi
+if diff -q <(docker run --rm "${IMAGE}" print-fixture extended 2>/dev/null) "${ROOT}/fixtures/extended/fixture.json" >/dev/null
+then ok "print-fixture extended"; else fail "print-fixture extended differs from fixtures/extended/fixture.json"; fi
 expect_exit 1 "print-fixture of an unknown name" "${IMAGE}" print-fixture no-such-fixture
 
 # ---- usage errors never touch the network ----
@@ -77,6 +79,12 @@ jq '.commands[0].target = 300' "${ROOT}/fixtures/baseline/fixture.json" > "${bad
 chmod 644 "${bad}/fixture.json"
 expect_exit 4 "server with an invalid fixture" -v "${bad}:/bad:ro" "${IMAGE}" server --fixture /bad/fixture.json
 expect_exit 4 "server with a missing fixture" "${IMAGE}" server --fixture /no/such/fixture.json
+jq '.points[0].groups = [17]' "${ROOT}/fixtures/baseline/fixture.json" > "${bad}/fixture.json"
+expect_exit 4 "server with an interrogation group out of range" -v "${bad}:/bad:ro" "${IMAGE}" server --fixture /bad/fixture.json
+jq '(.points[] | select(.type == "M_IT_NA_1")).groups = [1]' "${ROOT}/fixtures/baseline/fixture.json" > "${bad}/fixture.json"
+expect_exit 4 "server with an integrated total in a group" -v "${bad}:/bad:ro" "${IMAGE}" server --fixture /bad/fixture.json
+jq '(.points[] | select(.type == "M_BO_NA_1")).quality = ["CY"]' "${ROOT}/fixtures/baseline/fixture.json" > "${bad}/fixture.json"
+expect_exit 4 "server with a flag a bitstring cannot have" -v "${bad}:/bad:ro" "${IMAGE}" server --fixture /bad/fixture.json
 
 # ---- a connection that cannot be made ----
 doc=$(run_client "${ADAPTER}" interrogate --host "no-such-host-${RUN_ID}" --connect-timeout-ms 1500); CLIENT_EXIT=$?

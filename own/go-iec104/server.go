@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -140,15 +141,15 @@ func send(s *server.Session, a *asdu.ASDU) {
 	}
 }
 
-// answer sends the integrated totals or everything else, in ascending address
-// order, consecutive points of one type sharing an ASDU.
-func (st *station) answer(s *server.Session, cause asdu.Cause, originator uint8, counters bool) {
+// answer sends the points chosen, in ascending address order, consecutive points
+// of one type sharing an ASDU.
+func (st *station) answer(s *server.Session, cause asdu.Cause, originator uint8, chosen func(*point) bool) {
 	var out []*asdu.ASDU
 	var cur *asdu.ASDU
 	last := ""
 	st.mu.Lock()
 	for _, p := range st.fx.Points {
-		if (p.Type == "M_IT_NA_1") != counters {
+		if !chosen(p) {
 			continue
 		}
 		if cur == nil || p.Type != last || len(cur.Objects) >= objectsPerASDU {
@@ -166,13 +167,29 @@ func (st *station) answer(s *server.Session, cause asdu.Cause, originator uint8,
 	}
 }
 
+// interrogated says which points answer a QOI: every point that is not an
+// integrated total for the station, the points of a group for QOI 21..36, and
+// nothing for any other QOI.
+func interrogated(qoi asdu.QOI) func(*point) bool {
+	switch {
+	case qoi == asdu.QOIStation:
+		return func(p *point) bool { return p.Type != "M_IT_NA_1" }
+	case qoi >= asdu.QOIGroup1 && qoi <= asdu.QOIGroup16:
+		group := int(qoi - asdu.QOIStation)
+		return func(p *point) bool { return slices.Contains(p.Groups, group) }
+	}
+	return func(*point) bool { return false }
+}
+
 func (st *station) interrogation(s *server.Session, req *asdu.ASDU) {
 	if req.Cause != asdu.CauseActivation {
 		_ = s.Reject(req, asdu.CauseUnknownCause)
 		return
 	}
 	qoi := req.First().(asdu.Interrogation).Qualifier
-	accepted := qoi == asdu.QOIStation
+	chosen := interrogated(qoi)
+	// A group without a point has no group to serve.
+	accepted := qoi == asdu.QOIStation || slices.ContainsFunc(st.fx.Points, chosen)
 	e := event("interrogation")
 	e["commonAddress"], e["qoi"], e["accepted"] = int(req.CommonAddr), int(qoi), accepted
 	emit(e)
@@ -182,7 +199,7 @@ func (st *station) interrogation(s *server.Session, req *asdu.ASDU) {
 		return
 	}
 	_ = s.Confirm(own)
-	st.answer(s, qoi.Cause(), req.Originator, false)
+	st.answer(s, qoi.Cause(), req.Originator, chosen)
 	_ = s.Terminate(own)
 }
 
@@ -202,7 +219,7 @@ func (st *station) counterInterrogation(s *server.Session, req *asdu.ASDU) {
 		return
 	}
 	_ = s.Confirm(own)
-	st.answer(s, ci.Cause(), req.Originator, true)
+	st.answer(s, ci.Cause(), req.Originator, func(p *point) bool { return p.Type == "M_IT_NA_1" })
 	_ = s.Terminate(own)
 }
 

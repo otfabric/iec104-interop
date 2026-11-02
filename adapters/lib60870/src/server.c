@@ -71,10 +71,23 @@ static void connectionEventHandler(void* parameter, IMasterConnection connection
     emitJson(e);
 }
 
-/* Sends the points selected by counters (true: integrated totals, false:
- * everything else) in ascending address order, packing consecutive points of
- * one type into one ASDU. */
-static void sendPoints(IMasterConnection connection, CS101_CauseOfTransmission cot, int oa, bool counters)
+/* Which points an interrogation reports. */
+#define SELECT_COUNTERS (-1) /* the integrated totals */
+#define SELECT_STATION 0     /* everything else */
+/* 1..16: the points of that interrogation group */
+
+static bool isSelected(const Point* p, int selection)
+{
+    if (selection == SELECT_COUNTERS)
+        return p->type == M_IT_NA_1;
+    if (selection == SELECT_STATION)
+        return p->type != M_IT_NA_1;
+    return (p->groups & (1u << (selection - 1))) != 0;
+}
+
+/* Sends the selected points in ascending address order, packing consecutive
+ * points of one type into one ASDU. */
+static void sendPoints(IMasterConnection connection, CS101_CauseOfTransmission cot, int oa, int selection)
 {
     CS101_AppLayerParameters params = IMasterConnection_getApplicationLayerParameters(connection);
     CS101_ASDU asdu = NULL;
@@ -82,7 +95,7 @@ static void sendPoints(IMasterConnection connection, CS101_CauseOfTransmission c
 
     for (int i = 0; i < fx.pointCount; i++) {
         Point* p = &fx.points[i];
-        if ((p->type == M_IT_NA_1) != counters)
+        if (!isSelected(p, selection))
             continue;
         InformationObject io = pointToObject(p, NULL);
         if (asdu != NULL && (p->type != current || !CS101_ASDU_addInformationObject(asdu, io))) {
@@ -106,21 +119,30 @@ static void sendPoints(IMasterConnection connection, CS101_CauseOfTransmission c
 static bool interrogationHandler(void* parameter, IMasterConnection connection, CS101_ASDU asdu, uint8_t qoi)
 {
     (void)parameter;
+    /* QOI 21..36 are the groups 1..16; a group nothing belongs to is refused. */
+    int selection = SELECT_STATION;
+    bool accepted = qoi == IEC60870_QOI_STATION;
+    if (qoi >= IEC60870_QOI_GROUP_1 && qoi <= IEC60870_QOI_GROUP_16) {
+        selection = qoi - IEC60870_QOI_STATION;
+        for (int i = 0; i < fx.pointCount && !accepted; i++)
+            accepted = isSelected(&fx.points[i], selection);
+    }
     cJSON* e = event("interrogation");
     cJSON_AddNumberToObject(e, "commonAddress", CS101_ASDU_getCA(asdu));
     cJSON_AddNumberToObject(e, "qoi", qoi);
-    cJSON_AddBoolToObject(e, "accepted", qoi == IEC60870_QOI_STATION);
+    cJSON_AddBoolToObject(e, "accepted", accepted);
     emitJson(e);
 
     /* A broadcast request is answered with the station's own address. */
     CS101_ASDU_setCA(asdu, fx.commonAddress);
-    if (qoi != IEC60870_QOI_STATION) {
+    if (!accepted) {
         IMasterConnection_sendACT_CON(connection, asdu, true);
         return true;
     }
     IMasterConnection_sendACT_CON(connection, asdu, false);
     pthread_mutex_lock(&stateLock);
-    sendPoints(connection, CS101_COT_INTERROGATED_BY_STATION, CS101_ASDU_getOA(asdu), false);
+    /* The cause of an interrogation's answers is its QOI: 20, or 21..36. */
+    sendPoints(connection, (CS101_CauseOfTransmission)qoi, CS101_ASDU_getOA(asdu), selection);
     pthread_mutex_unlock(&stateLock);
     IMasterConnection_sendACT_TERM(connection, asdu);
     return true;
@@ -145,7 +167,7 @@ static bool counterInterrogationHandler(void* parameter, IMasterConnection conne
     }
     IMasterConnection_sendACT_CON(connection, asdu, false);
     pthread_mutex_lock(&stateLock);
-    sendPoints(connection, CS101_COT_REQUESTED_BY_GENERAL_COUNTER, CS101_ASDU_getOA(asdu), true);
+    sendPoints(connection, CS101_COT_REQUESTED_BY_GENERAL_COUNTER, CS101_ASDU_getOA(asdu), SELECT_COUNTERS);
     pthread_mutex_unlock(&stateLock);
     IMasterConnection_sendACT_TERM(connection, asdu);
     return true;

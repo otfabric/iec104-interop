@@ -71,9 +71,6 @@ make -f own/go-iec104/Makefile image smoke interop    # from the repository root
 
 Declared `false`:
 
-- `groupInterrogation`: the contract's station refuses groups
-  ([FIXTURES.md](../../docs/FIXTURES.md)).
-- `pointQualityOnBitstring`: the fixture format gives `M_BO_NA_1` no quality.
 - `tls`: go-iec104 has TLS, but the contract has no flags for it.
 
 The contract also has no way to reach these parts of go-iec104, so they are not

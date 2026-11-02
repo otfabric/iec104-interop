@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.function.Predicate;
 
 import org.openmuc.j60870.ASdu;
 import org.openmuc.j60870.ASduType;
@@ -292,16 +293,16 @@ final class ServerCommand {
     }
 
     /**
-     * Sends the points selected by counters (true: integrated totals, false: everything else) in ascending address
-     * order, packing consecutive points of one type into one ASDU.
+     * Sends the selected points in ascending address order, packing consecutive points of one type into one ASDU.
      */
-    private void sendPoints(Connection c, CauseOfTransmission cot, int oa, boolean counters) throws IOException {
+    private void sendPoints(Connection c, CauseOfTransmission cot, int oa, Predicate<Fixture.Point> selected)
+            throws IOException {
         List<InformationObject> batch = new ArrayList<>();
         ASduType current = null;
         List<ASdu> out = new ArrayList<>();
         synchronized (fx) {
             for (Fixture.Point p : fx.points) {
-                if ((p.type == ASduType.M_IT_NA_1) != counters) {
+                if (!selected.test(p)) {
                     continue;
                 }
                 if (!batch.isEmpty() && (p.type != current || batch.size() >= MAX_OBJECTS)) {
@@ -325,7 +326,15 @@ final class ServerCommand {
     private void interrogation(Connection c, ASdu asdu) throws IOException {
         int qoi = ((IeQualifierOfInterrogation) asdu.getInformationObjects()[0].getInformationElements()[0][0])
                 .getValue();
+        boolean group = qoi >= 21 && qoi <= 36;
+        Predicate<Fixture.Point> selected = group ? p -> p.groups.contains(qoi - 20)
+                : p -> p.type != ASduType.M_IT_NA_1;
         boolean accepted = qoi == 20;
+        if (group) {
+            synchronized (fx) {
+                accepted = fx.points.stream().anyMatch(selected);
+            }
+        }
         JsonObject e = event("interrogation");
         e.addProperty("commonAddress", asdu.getCommonAddress());
         e.addProperty("qoi", qoi);
@@ -336,7 +345,8 @@ final class ServerCommand {
             return;
         }
         confirm(c, asdu, false);
-        sendPoints(c, CauseOfTransmission.INTERROGATED_BY_STATION, originator(asdu), false);
+        // The causes 21..36 are the groups 1..16.
+        sendPoints(c, CauseOfTransmission.causeFor(qoi), originator(asdu), selected);
         c.sendActivationTermination(asdu, fx.commonAddress);
     }
 
@@ -355,7 +365,8 @@ final class ServerCommand {
             return;
         }
         confirm(c, asdu, false);
-        sendPoints(c, CauseOfTransmission.REQUESTED_BY_GENERAL_COUNTER, originator(asdu), true);
+        sendPoints(c, CauseOfTransmission.REQUESTED_BY_GENERAL_COUNTER, originator(asdu),
+                p -> p.type == ASduType.M_IT_NA_1);
         c.sendActivationTermination(asdu, fx.commonAddress);
     }
 

@@ -203,14 +203,14 @@ func (s *station) pointASDU(pts []*point, timed bool, cause asdu.Cause, oa asdu.
 	return a
 }
 
-// sendPoints sends the integrated totals (counters) or everything else, in
-// ascending address order, consecutive points of one type sharing an ASDU.
-func (s *station) sendPoints(c asdu.Connect, cause asdu.Cause, oa asdu.OriginAddr, counters bool) {
+// sendPoints sends the points chosen by include, in ascending address order,
+// consecutive points of one type sharing an ASDU.
+func (s *station) sendPoints(c asdu.Connect, cause asdu.Cause, oa asdu.OriginAddr, include func(*point) bool) {
 	var out []*asdu.ASDU
 	var batch []*point
 	s.mu.Lock()
 	for _, p := range s.fx.Points {
-		if (p.typ == asdu.M_IT_NA_1) != counters {
+		if !include(p) {
 			continue
 		}
 		if len(batch) > 0 && (p.typ != batch[0].typ || len(batch) >= maxObjects) {
@@ -241,7 +241,9 @@ func (s *station) OnInterrogation(c asdu.Connect, pack *asdu.ASDU, qoi asdu.Qual
 		s.reject(c, request, asdu.UnknownCOT)
 		return nil
 	}
-	accepted := qoi == asdu.QOIStation
+	// QOI 21..36 are the groups 1..16, and the cause of the answer is the QOI.
+	group := int(qoi) - int(asdu.QOIStation)
+	accepted := qoi == asdu.QOIStation || (group >= 1 && group <= 16 && s.fx.hasGroup(group))
 	e := event("interrogation")
 	e["commonAddress"] = int(request.CommonAddr)
 	e["qoi"] = int(qoi)
@@ -252,7 +254,11 @@ func (s *station) OnInterrogation(c asdu.Connect, pack *asdu.ASDU, qoi asdu.Qual
 		return nil
 	}
 	s.confirm(c, request, false)
-	s.sendPoints(c, asdu.InterrogatedByStation, request.OrigAddr, false)
+	include := func(p *point) bool { return p.inGroup(group) }
+	if qoi == asdu.QOIStation {
+		include = func(p *point) bool { return p.typ != asdu.M_IT_NA_1 }
+	}
+	s.sendPoints(c, asdu.Cause(qoi), request.OrigAddr, include)
 	reply(c, request, asdu.ActivationTerm, false, s.ca)
 	return nil
 }
@@ -278,7 +284,7 @@ func (s *station) OnCounterInterrogation(c asdu.Connect, pack *asdu.ASDU, qcc as
 		return nil
 	}
 	s.confirm(c, request, false)
-	s.sendPoints(c, asdu.RequestByGeneralCounter, request.OrigAddr, true)
+	s.sendPoints(c, asdu.RequestByGeneralCounter, request.OrigAddr, func(p *point) bool { return p.typ == asdu.M_IT_NA_1 })
 	reply(c, request, asdu.ActivationTerm, false, s.ca)
 	return nil
 }

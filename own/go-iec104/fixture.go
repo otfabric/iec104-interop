@@ -22,6 +22,7 @@ type point struct {
 	Transient bool     `json:"transient"`
 	Sequence  *int     `json:"sequence"`
 	Quality   []string `json:"quality"`
+	Groups    []int    `json:"groups"`
 
 	value float64 // 0 or 1 for M_SP_NA_1, the raw NVA for M_ME_NA_1
 }
@@ -84,7 +85,6 @@ func (p *point) validate() error {
 		valid = number(-64, 63)
 	case "M_BO_NA_1":
 		valid = number(0, math.MaxUint32)
-		quality = nil
 	case "M_ME_NA_1", "M_ME_NB_1":
 		valid = number(math.MinInt16, math.MaxInt16)
 	case "M_ME_NC_1":
@@ -107,6 +107,14 @@ func (p *point) validate() error {
 	for _, q := range p.Quality {
 		if !slices.Contains(quality, q) {
 			return fmt.Errorf("point %d: quality %s is not valid for %s", p.IOA, q, p.Type)
+		}
+	}
+	if p.Groups != nil && p.Type == "M_IT_NA_1" {
+		return fmt.Errorf("point %d: an integrated total has no interrogation group", p.IOA)
+	}
+	for i, g := range p.Groups {
+		if g < 1 || g > 16 || slices.Contains(p.Groups[:i], g) {
+			return fmt.Errorf("point %d: the groups must be unique and 1..16", p.IOA)
 		}
 	}
 	return nil

@@ -10,7 +10,8 @@
 #   - a general interrogation returns exactly the points of the fixture,
 #   - a command changes what a later interrogation reports,
 #   - k = w = 1, an idle connection and concurrent sessions work.
-# And tests/secure-cases.tsv for the pairings that have the security flags.
+# And tests/feature-cases.tsv and tests/secure-cases.tsv for the pairings that
+# have what those cases need.
 #
 # tests/known-bugs.tsv lists bugs of specific upstream versions; a case they
 # explain is counted as a known bug instead of a failure.
@@ -277,6 +278,112 @@ while IFS=$'\t' read -r file_ioa file_name file_size; do
         done
     done
 done < <(jq -r '.files[]? | [.ioa, .name, .size] | @tsv' "${FIXTURE}")
+
+# ---- features beyond the baseline fixture ----
+# tests/feature-cases.tsv. "ro" cases share one server per adapter and set of
+# flags; "rw" cases get a fresh one. A pairing that lacks a feature skips them.
+FEATURE_CASES="${ROOT}/tests/feature-cases.tsv"
+feature_flags() {
+    sed -E -e 's#@ext#--fixture /fixtures/extended/fixture.json#g' \
+        -e 's#@tls-([a-z-]+)#--tls --tls-cert /secrets/\1.pem --tls-key /secrets/\1.key#g' <<<"$1"
+}
+feature_server() {  # feature_server <state> <adapter> <flags>: prints the container name; a shared one stays up
+    local tag name
+    if [[ "$1" == "ro" ]]; then
+        tag="f$(cksum <<<"$3" | cut -d' ' -f1)"
+        name=$(SERVER_TAG="${tag}" server_name "$2")
+        if docker inspect "${name}" >/dev/null 2>&1; then echo "${name}"; return 0; fi
+    else
+        tag=fresh
+    fi
+    # shellcheck disable=SC2086
+    name=$(SERVER_TAG="${tag}" start_server "$2" ${3}) || return 1
+    wait_ready "${name}" || return 1
+    echo "${name}"
+}
+make_identities "${WORK}/secrets" || { fail "cannot make key material with openssl"; finish; exit 1; }
+DOCKER_ARGS=(-v "${WORK}/secrets:/secrets:ro")
+n=0
+while IFS=$'\t' read -r case_id state want_exit want_summary needs server_flags operation; do
+    [[ -z "${case_id}" || "${case_id}" == \#* ]] && continue
+    n=$((n + 1))
+    [[ "${server_flags}" == "-" ]] && server_flags=""
+    server_flags=$(feature_flags "${server_flags}"); operation=$(feature_flags "${operation}")
+    reference="" reference_pair=""
+    for server in "${ADAPTERS[@]}"; do
+        for client in "${ADAPTERS[@]}"; do
+            pair="${client}->${server}"
+            at "${case_id}" "${client}" "${server}"
+            if ! supported "${client}" "${server}" "${needs}"; then
+                skip "${pair}: ${case_id} (needs ${needs})"
+                continue
+            fi
+            name=$(feature_server "${state}" "${server}" "${server_flags}") || { fail "${pair}: ${case_id}: the server did not start"; continue; }
+            # shellcheck disable=SC2086
+            doc=$(run_client "${client}" ${operation} --host "${name}"); CLIENT_EXIT=$?
+            [[ "${state}" == "rw" ]] && stop_server "${name}"
+            keep "feature${n}-${pair}" "${doc}"
+            bug=$(known_bug "${client}" "${server}" "${operation}")
+            summary=$(jq -r "${FEATURE_SUMMARY}" <<<"${doc}" 2>/dev/null)
+            if [[ "${summary}" != "${want_summary}" || "${CLIENT_EXIT}" != "${want_exit}" ]]; then
+                if [[ -n "${bug}" ]]; then
+                    hit_known_bug "${pair}" "${operation}" "${bug}"
+                    continue
+                fi
+                fail "${pair}: ${case_id}: server ${server_flags}: ${operation}"
+                log "    want exit=${want_exit} ${want_summary}"
+                log "    got  exit=${CLIENT_EXIT} ${summary:-<no result document>}"
+                continue
+            fi
+            ok "${pair}: ${case_id}"
+            [[ -n "${bug}" ]] && continue
+            at "${case_id}.agrees" "${client}" "${server}"
+            normalized=$(jq -cS "${NORMALIZE}" <<<"${doc}")
+            if [[ -z "${reference}" ]]; then
+                reference="${normalized}"; reference_pair="${pair}"
+            elif [[ "${normalized}" != "${reference}" ]]; then
+                fail "${pair} and ${reference_pair} disagree on: ${case_id}"
+                diff <(jq -S . <<<"${reference}") <(jq -S . <<<"${normalized}") | head -20 >&2
+            else
+                ok "${pair} agrees with ${reference_pair}: ${case_id}"
+            fi
+        done
+    done
+done < "${FEATURE_CASES}"
+
+# ---- values: the groups and qualities of the extended fixture ----
+# The outcome line shows types and causes only; here the objects themselves
+# are compared with the fixture, which is what can fail when a flag or a group
+# is dropped.
+EXTENDED="${ROOT}/fixtures/extended/fixture.json"
+for server in "${ADAPTERS[@]}"; do
+    has "${server}" pointQualityOnBitstring || continue
+    name=$(feature_server ro "${server}" "$(feature_flags @ext)") || { fail "${server}: the extended server did not start"; continue; }
+    for client in "${ADAPTERS[@]}"; do
+        pair="${client}->${server}"
+        for group in 0 1 2 3 16; do
+            at "values.group-${group}" "${client}" "${server}"
+            if (( group == 0 )); then
+                qoi=20; select='.type != "M_IT_NA_1"'
+            else
+                qoi=$((20 + group)); select="((.groups // []) | index(${group})) != null"
+                supported "${client}" "${server}" "server:groupInterrogation,client:groupInterrogation" \
+                    || { skip "${pair}: group ${group}"; continue; }
+            fi
+            want=$(jq -cS "[.points[] | select(${select}) | {ioa, type, value, quality: (.quality // [])}] | sort_by(.ioa)" "${EXTENDED}")
+            got=$(run_client "${client}" interrogate --qoi "${qoi}" --host "${name}" | jq -cS --argjson cot "${qoi}" "${got_points}")
+            if [[ "${got}" == "${want}" ]]; then ok "${pair}: group ${group} matches the fixture"
+            else fail "${pair}: group ${group} does not match the fixture"; log "    want ${want}"; log "    got  ${got}"; fi
+        done
+        at values.bitstring-quality-read "${client}" "${server}"
+        got=$(run_client "${client}" read --ioa 104 --host "${name}" | jq -c '[.asdus[] | .objects[] | select(.ioa == 104) | {value, quality}] | first')
+        if [[ "${got}" == '{"value":1431655765,"quality":["OV","IV"]}' ]]; then ok "${pair}: quality of a bitstring"
+        elif bug=$(known_bug "${client}" "${server}" "read --ioa 104"); then hit_known_bug "${pair}" "read of a bitstring" "${bug}"
+        else fail "${pair}: quality of a bitstring is ${got}"; fi
+    done
+done
+
+DOCKER_ARGS=()
 
 # ---- security: the A-Profile of IEC 62351-5 ----
 # tests/secure-cases.tsv, for every pairing that declares secureAuthentication.

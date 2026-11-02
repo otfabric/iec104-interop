@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"sort"
 
 	iec "github.com/cB-Sigma/iec60870"
@@ -22,6 +23,7 @@ type point struct {
 	Transient *bool    `json:"transient"`
 	Sequence  *int     `json:"sequence"`
 	Quality   []string `json:"quality"`
+	Groups    []int    `json:"groups"`
 
 	typ   iec.TypeID
 	value float64 // raw NVA for M_ME_NA_1; 0 or 1 for M_SP_NA_1
@@ -90,6 +92,11 @@ func (fx *fixture) file(ioa int) *fileSpec {
 	return nil
 }
 
+// hasGroup reports whether a point of the fixture is in the interrogation group.
+func (fx *fixture) hasGroup(group int) bool {
+	return slices.ContainsFunc(fx.Points, func(p *point) bool { return slices.Contains(p.Groups, group) })
+}
+
 // content is the content of a file: octet i is (i + ioa) mod 251.
 func (f *fileSpec) content() []byte {
 	b := make([]byte, f.Size)
@@ -117,8 +124,6 @@ func allowedQuality(t iec.TypeID) string {
 	switch t {
 	case iec.MSpNa1, iec.MDpNa1:
 		return "BL SB NT IV"
-	case iec.MBoNa1:
-		return "" // kept empty for every adapter: lib60870 cannot set it
 	case iec.MItNa1:
 		return "CY CA IV"
 	default:
@@ -184,6 +189,14 @@ func loadFixture(path string) (*fixture, error) {
 		for _, q := range p.Quality {
 			if len(q) != 2 || !containsWord(allowed, q) {
 				return nil, fmt.Errorf("point %d: quality is not valid for %s", p.IOA, p.Type)
+			}
+		}
+		if len(p.Groups) > 0 && p.typ == iec.MItNa1 {
+			return nil, fmt.Errorf("point %d: an integrated total has no interrogation group", p.IOA)
+		}
+		for i, g := range p.Groups {
+			if g < 1 || g > 16 || slices.Contains(p.Groups[:i], g) {
+				return nil, fmt.Errorf("point %d: groups are unique and 1..16", p.IOA)
 			}
 		}
 	}

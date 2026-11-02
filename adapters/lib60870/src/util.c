@@ -132,8 +132,8 @@ InformationObject pointToObject(const Point* p, CP56Time2a ts)
         return ts ? (InformationObject)StepPositionWithCP56Time2a_create(NULL, ioa, (int)p->value, p->transient, q, ts)
                   : (InformationObject)StepPositionInformation_create(NULL, ioa, (int)p->value, p->transient, q);
     case M_BO_NA_1:
-        return ts ? (InformationObject)Bitstring32WithCP56Time2a_create(NULL, ioa, (uint32_t)p->value, ts)
-                  : (InformationObject)BitString32_create(NULL, ioa, (uint32_t)p->value);
+        return ts ? (InformationObject)Bitstring32WithCP56Time2a_createEx(NULL, ioa, (uint32_t)p->value, q, ts)
+                  : (InformationObject)BitString32_createEx(NULL, ioa, (uint32_t)p->value, q);
     case M_ME_NA_1: {
         float f = normalizedFromRaw((int)p->value);
         return ts ? (InformationObject)MeasuredValueNormalizedWithCP56Time2a_create(NULL, ioa, f, q, ts)

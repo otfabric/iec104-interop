@@ -125,7 +125,7 @@ public final class Main {
 
         JsonObject f = new JsonObject();
         f.addProperty("generalInterrogation", true);
-        f.addProperty("groupInterrogation", false);
+        f.addProperty("groupInterrogation", true);
         f.addProperty("counterInterrogation", true);
         f.addProperty("read", true);
         f.addProperty("clockSync", true);
@@ -137,7 +137,7 @@ public final class Main {
         f.addProperty("spontaneousOnCommand", true);
         f.addProperty("apciParameters", true);
         f.addProperty("multipleConnections", true);
-        f.addProperty("pointQualityOnBitstring", false);
+        f.addProperty("pointQualityOnBitstring", true);
         f.addProperty("tls", false);
         // The server reports STARTDT and STOPDT as events.
         f.addProperty("dataTransferEvents", true);

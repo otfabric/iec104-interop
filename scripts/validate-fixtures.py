@@ -41,6 +41,9 @@ def semantic_errors(fx):
         if ioa in points:
             errors.append(f"point {ioa}: duplicate information object address")
         points[ioa] = p
+    for p in fx.get("points", []):
+        if p.get("type") == "M_IT_NA_1" and "groups" in p:
+            errors.append(f"point {p.get('ioa')}: an integrated total has no interrogation group")
     seen = set()
     for c in fx.get("commands", []):
         ioa = c.get("ioa")

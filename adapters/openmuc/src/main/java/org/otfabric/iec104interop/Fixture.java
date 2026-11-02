@@ -38,6 +38,8 @@ final class Fixture {
         boolean transientState;
         int sequence;
         Set<String> quality = Set.of();
+        /** Interrogation groups, 1..16. */
+        Set<Integer> groups = Set.of();
     }
 
     static final class Command {
@@ -192,8 +194,6 @@ final class Fixture {
                 break;
             case M_BO_NA_1:
                 valid = inRange(v, 0, 4294967295.0);
-                // Kept empty for every adapter: lib60870 cannot set it.
-                allowed = Set.of();
                 break;
             case M_ME_NA_1:
             case M_ME_NB_1:
@@ -239,6 +239,19 @@ final class Fixture {
                     flags.add(f.getAsString());
                 }
                 p.quality = flags;
+            }
+            if (o.has("groups")) {
+                JsonElement g = o.get("groups");
+                if (p.type == ASduType.M_IT_NA_1 || !g.isJsonArray()) {
+                    throw new InvalidException("point " + p.ioa + ": groups is an array, and not of M_IT_NA_1");
+                }
+                Set<Integer> groups = new java.util.TreeSet<>();
+                for (JsonElement n : (JsonArray) g) {
+                    if (!inRange(n, 1, 16) || !groups.add(n.getAsInt())) {
+                        throw new InvalidException("point " + p.ioa + ": groups are unique and 1..16");
+                    }
+                }
+                p.groups = groups;
             }
             fx.points.add(p);
         }

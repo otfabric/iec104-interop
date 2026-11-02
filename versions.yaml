@@ -4,7 +4,7 @@
 # build: scripts/check-versions.sh fails when this file disagrees with them.
 
 interop_version: "0.4.1"
-contract_version: "1.2"        # docs/CONTAINER_CONTRACT.md, schemaVersion of every document
+contract_version: "1.3"        # docs/CONTAINER_CONTRACT.md, schemaVersion of every document
 fixture_schema: "1.0"          # fixtures/schema/iec104-fixture.schema.json
 
 protocol:

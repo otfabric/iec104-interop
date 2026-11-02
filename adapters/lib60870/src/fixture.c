@@ -65,9 +65,28 @@ static bool parseQuality(const cJSON* q, IEC60870_5_TypeID type, uint8_t* out)
             else return false;
             if (bit == IEC60870_QUALITY_OVERFLOW && (type == M_SP_NA_1 || type == M_DP_NA_1))
                 return false;
-            if (type == M_BO_NA_1)
-                return false; /* lib60870 cannot set a quality on a bitstring */
         }
+        *out |= bit;
+    }
+    return true;
+}
+
+/* Parses the interrogation groups of a point: 1..16, unique. */
+static bool parseGroups(const cJSON* g, uint32_t* out)
+{
+    *out = 0;
+    if (g == NULL)
+        return true;
+    if (!cJSON_IsArray(g))
+        return false;
+    const cJSON* item;
+    cJSON_ArrayForEach(item, g)
+    {
+        if (!isInteger(item) || item->valueint < 1 || item->valueint > 16)
+            return false;
+        uint32_t bit = 1u << (item->valueint - 1);
+        if (*out & bit)
+            return false;
         *out |= bit;
     }
     return true;
@@ -197,6 +216,16 @@ bool Fixture_load(const char* path, Fixture* fx, char* err, size_t errSize)
         }
         if (!parseQuality(cJSON_GetObjectItemCaseSensitive(item, "quality"), p->type, &p->quality)) {
             fail(err, errSize, "point %d: quality is not valid for %s", p->ioa, type->valuestring);
+            goto done;
+        }
+        const cJSON* groups = cJSON_GetObjectItemCaseSensitive(item, "groups");
+        if (groups != NULL && p->type == M_IT_NA_1) {
+            fail(err, errSize, "point %d: an interrogation does not report %s, so it has no groups", p->ioa,
+                type->valuestring);
+            goto done;
+        }
+        if (!parseGroups(groups, &p->groups)) {
+            fail(err, errSize, "point %d: groups must be unique numbers 1..16%s", p->ioa, "");
             goto done;
         }
         fx->pointCount++;

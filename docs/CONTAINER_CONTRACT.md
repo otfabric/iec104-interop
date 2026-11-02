@@ -1,6 +1,6 @@
 # Container contract
 
-Version: **1.2** (`contract_version` in [versions.yaml](../versions.yaml))
+Version: **1.3** (`contract_version` in [versions.yaml](../versions.yaml))
 
 Every adapter image exposes the same commands, flags, JSON documents and exit
 codes. Consumers depend on this document, not on any adapter's source. A
@@ -10,6 +10,7 @@ and changes only with the major version.
 
 | Version | Change |
 |---------|--------|
+| 1.3 | Interrogation groups and `groups` in fixtures, the feature `groupInterrogation`; a quality on `M_BO_NA_1`, the feature `pointQualityOnBitstring`; the fixture `extended` |
 | 1.2 | The [security flags](#security-flags) of the A-Profile of IEC 62351-5; `secure` in the `ready` event; `secured` in the result document; the error `security-failed`; a mirror with cause 17 counts as a confirmation; the feature `secureAuthentication` |
 | 1.1 | The `file-get` operation, its `file` result and the file transfer ASDU documents; the `file-transfer` server event; `files` in fixtures; the features `fileServer`, `fileClient` and `dataTransferEvents` |
 | 1.0 | First release |
@@ -43,7 +44,7 @@ What a *station* does with a request is defined by its fixture: see
 | Default command | `server` |
 | Port | 2404/tcp |
 | User | non-root, uid 10001 |
-| Fixtures | `/fixtures/<name>/fixture.json` (baked in; mount over `/fixtures` to replace) |
+| Fixtures | `/fixtures/<name>/fixture.json` (baked in: `baseline` and `extended`; mount over `/fixtures` to replace) |
 | Readiness file | `/run/iec104-interop/ready` |
 | Health check | built in: `test -f /run/iec104-interop/ready` |
 | Licences | `/licenses/` |
@@ -219,7 +220,7 @@ the operation, close the connection.
 | Operation | Flags | Sends | Succeeds when |
 |-----------|-------|-------|---------------|
 | `connect` | `--hold-ms N` (0) | STARTDT act; after the hold, STOPDT act | STOPDT con is received. During the hold the connection is idle, so `t3` and TESTFR run |
-| `interrogate` | `--qoi N` (20) | C_IC_NA_1 activation | Positive activation confirmation, then activation termination |
+| `interrogate` | `--qoi N` (20) | C_IC_NA_1 activation. QOI 21..36 are the interrogation groups 1..16; only with the feature `groupInterrogation` are they answered by anything but a refusal | Positive activation confirmation, then activation termination |
 | `counter-interrogate` | `--qcc N` (5) | C_CI_NA_1 activation; `qcc` is the raw qualifier octet | Positive activation confirmation, then activation termination |
 | `read` | `--ioa N` (required) | C_RD_NA_1 | An ASDU with cause 5 (request) containing the address arrives |
 | `clock-sync` | `--time T` (now) | C_CS_NA_1 activation; `T` like `2026-01-02T03:04:05.678Z` | Positive activation confirmation |
@@ -381,7 +382,8 @@ CP56Time2a command types or F_SG_NA_1 and declares so in its capabilities.
 
 `quality` is an array of flag abbreviations in this order: `OV`, `BL`, `SB`,
 `NT`, `IV`; for integrated totals `CY`, `CA`, `IV`. An empty array means
-good.
+good. A received `M_BO_NA_1` reports its quality like any other point, whether
+or not the adapter can serve one (`pointQualityOnBitstring`).
 
 `time` is UTC, `YYYY-MM-DDTHH:MM:SS.mmmZ`. Adapters put UTC on the wire.
 

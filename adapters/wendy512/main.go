@@ -100,7 +100,7 @@ func printCapabilities() int {
 		"roles": object{"server": true, "client": true},
 		"features": object{
 			"generalInterrogation": true,
-			"groupInterrogation":   false,
+			"groupInterrogation":   true,
 			"counterInterrogation": true,
 			"read":                 true,
 			"clockSync":            true,
@@ -115,7 +115,7 @@ func printCapabilities() int {
 			"spontaneousOnCommand":    true,
 			"apciParameters":          true,
 			"multipleConnections":     true,
-			"pointQualityOnBitstring": false,
+			"pointQualityOnBitstring": true,
 			"tls":                     false,
 			// The server has no hook for STARTDT and STOPDT.
 			"dataTransferEvents": false,

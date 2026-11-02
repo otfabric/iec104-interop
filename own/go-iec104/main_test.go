@@ -28,7 +28,10 @@ const testFixture = `{
     {"ioa": 100, "type": "M_SP_NA_1", "value": true, "quality": ["BL"]},
     {"ioa": 200, "type": "M_ME_NC_1", "value": 1.5},
     {"ioa": 300, "type": "M_ST_NA_1", "value": 63, "transient": true},
-    {"ioa": 700, "type": "M_IT_NA_1", "value": 7, "sequence": 3, "quality": ["CY"]}
+    {"ioa": 700, "type": "M_IT_NA_1", "value": 7, "sequence": 3, "quality": ["CY"]},
+    {"ioa": 800, "type": "M_BO_NA_1", "value": 4042322160, "quality": ["OV", "NT"], "groups": [2, 16]},
+    {"ioa": 801, "type": "M_BO_NA_1", "value": 1, "groups": [2]},
+    {"ioa": 802, "type": "M_SP_NA_1", "value": true, "groups": [16]}
   ],
   "commands": [
     {"ioa": 1000, "type": "C_SC_NA_1", "target": 100, "reportCause": 3},
@@ -157,6 +160,11 @@ func TestInvalidFixtures(t *testing.T) {
 		"duplicate":    `{"schemaVersion": "1.0", "name": "x", "station": {"commonAddress": 1}, "points": [{"ioa": 1, "type": "M_SP_NA_1", "value": true}, {"ioa": 1, "type": "M_SP_NA_1", "value": true}]}`,
 		"value":        `{"schemaVersion": "1.0", "name": "x", "station": {"commonAddress": 1}, "points": [{"ioa": 1, "type": "M_DP_NA_1", "value": 4}]}`,
 		"quality":      `{"schemaVersion": "1.0", "name": "x", "station": {"commonAddress": 1}, "points": [{"ioa": 1, "type": "M_SP_NA_1", "value": true, "quality": ["OV"]}]}`,
+		"bit quality":  `{"schemaVersion": "1.0", "name": "x", "station": {"commonAddress": 1}, "points": [{"ioa": 1, "type": "M_BO_NA_1", "value": 1, "quality": ["CY"]}]}`,
+		"group 0":      `{"schemaVersion": "1.0", "name": "x", "station": {"commonAddress": 1}, "points": [{"ioa": 1, "type": "M_SP_NA_1", "value": true, "groups": [0]}]}`,
+		"group 17":     `{"schemaVersion": "1.0", "name": "x", "station": {"commonAddress": 1}, "points": [{"ioa": 1, "type": "M_SP_NA_1", "value": true, "groups": [17]}]}`,
+		"group twice":  `{"schemaVersion": "1.0", "name": "x", "station": {"commonAddress": 1}, "points": [{"ioa": 1, "type": "M_SP_NA_1", "value": true, "groups": [1, 1]}]}`,
+		"total group":  `{"schemaVersion": "1.0", "name": "x", "station": {"commonAddress": 1}, "points": [{"ioa": 1, "type": "M_IT_NA_1", "value": 1, "groups": [1]}]}`,
 		"target":       `{"schemaVersion": "1.0", "name": "x", "station": {"commonAddress": 1}, "points": [{"ioa": 1, "type": "M_SP_NA_1", "value": true}], "commands": [{"ioa": 2, "type": "C_DC_NA_1", "target": 1}]}`,
 		"report cause": `{"schemaVersion": "1.0", "name": "x", "station": {"commonAddress": 1}, "points": [{"ioa": 1, "type": "M_SP_NA_1", "value": true}], "commands": [{"ioa": 2, "type": "C_SC_NA_1", "target": 1, "reportCause": 5}]}`,
 		"file":         `{"schemaVersion": "1.0", "name": "x", "station": {"commonAddress": 1}, "points": [{"ioa": 1, "type": "M_SP_NA_1", "value": true}], "files": [{"ioa": 2, "name": 1, "size": 10, "sectionSize": 11}]}`,
@@ -321,7 +329,7 @@ func TestAgainstOwnServer(t *testing.T) {
 		if r["terminated"] != true {
 			t.Errorf("result %v", r)
 		}
-		if got := objects(t, r); len(got) != 5 { // interrogation twice, three points
+		if got := objects(t, r); len(got) != 8 { // interrogation twice, six points
 			t.Errorf("objects %v", got)
 		}
 		if e := find(t, events, "interrogation"); e["accepted"] != true {
@@ -330,12 +338,48 @@ func TestAgainstOwnServer(t *testing.T) {
 	})
 
 	t.Run("group interrogation", func(t *testing.T) {
-		r, events := operate(t, out, common, "interrogate", "--qoi", "21")
+		r, events := operate(t, out, common, "interrogate", "--qoi", "36")
+		if r["terminated"] != true {
+			t.Errorf("result %v", r)
+		}
+		var answer []string
+		for _, a := range list(r["asdus"])[1:2] {
+			answer = append(answer, fmt.Sprint(a["type"], "/", a["cot"], "/", a["count"]))
+		}
+		if strings.Join(answer, " ") != "M_BO_NA_1/36/1" {
+			t.Errorf("answer %v", answer)
+		}
+		if e := find(t, events, "interrogation"); e["accepted"] != true || e["qoi"] != float64(36) {
+			t.Errorf("event %v", e)
+		}
+		r, _ = operate(t, out, common, "interrogate", "--qoi", "22")
+		if len(objects(t, r)) != 4 { // the two points of the group share an ASDU
+			t.Errorf("group 2: %v", r)
+		}
+	})
+
+	t.Run("empty group", func(t *testing.T) {
+		r, events := operate(t, out, common, "interrogate", "--qoi", "30")
 		if errorCode(r) != "negative-confirmation" {
 			t.Errorf("result %v", r)
 		}
 		if e := find(t, events, "interrogation"); e["accepted"] != false {
 			t.Errorf("event %v", e)
+		}
+	})
+
+	t.Run("qualifier that is no group", func(t *testing.T) {
+		r, _ := operate(t, out, common, "interrogate", "--qoi", "37")
+		if errorCode(r) != "negative-confirmation" {
+			t.Errorf("result %v", r)
+		}
+	})
+
+	t.Run("bitstring quality", func(t *testing.T) {
+		r, _ := operate(t, out, common, "read", "--ioa", "800")
+		o := objects(t, r)[0]
+		if o["value"] != float64(4042322160) || fmt.Sprint(o["quality"]) != "[OV NT]" {
+			t.Errorf("object %v", o)
 		}
 	})
 
