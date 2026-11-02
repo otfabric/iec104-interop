@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"os"
@@ -66,6 +67,10 @@ func runServer(a *args) (int, error) {
 	if err := a.roleFlags(security); err != nil {
 		return 0, err
 	}
+	tlsConfig, err := a.tlsFlags(security != nil)
+	if err != nil {
+		return 0, err
+	}
 	if err := a.finish("server"); err != nil {
 		return 0, err
 	}
@@ -94,10 +99,58 @@ func runServer(a *args) (int, error) {
 	defer cancel()
 
 	var (
-		mu    sync.Mutex
-		conns = map[*conn]struct{}{}
-		wg    sync.WaitGroup
+		mu       sync.Mutex
+		stopping bool
+		conns    = map[*conn]struct{}{}
+		wg       sync.WaitGroup
 	)
+	// serve runs one connection; with --tls, nc is the TLS session.
+	serve := func(nc net.Conn) {
+		c := &conn{peer: nc.RemoteAddr().String()}
+		lcfg := cfg
+		if security != nil {
+			var err error
+			if c.sl, err = security.link(false, st.ca); err != nil {
+				logf("security: %v", err)
+				_ = nc.Close()
+				return
+			}
+			lcfg.Security = c.sl
+		}
+		mu.Lock()
+		if stopping || len(conns) >= maxConnections {
+			mu.Unlock()
+			logf("refusing %s: %d connections are open", c.peer, maxConnections)
+			_ = nc.Close()
+			return
+		}
+		conns[c] = struct{}{}
+		wg.Add(1)
+		mu.Unlock()
+		cctx, ccancel := context.WithCancel(ctx)
+		if c.sl != nil {
+			go c.sl.Run(cctx)
+		}
+		e := event("connection-opened")
+		e["peer"] = c.peer
+		emit(e)
+		c.link = cs104.Accept(cctx, nc, lcfg, func(l *cs104.Link) { st.started(c, l) }, nil)
+		go func() {
+			defer wg.Done()
+			defer ccancel()
+			for raw := range c.link.ASDUs() {
+				st.handle(cctx, c, raw)
+			}
+			<-c.link.Done()
+			c.watch.Wait()
+			mu.Lock()
+			delete(conns, c)
+			mu.Unlock()
+			e := event("connection-closed")
+			e["peer"] = c.peer
+			emit(e)
+		}()
+	}
 	acceptErr := make(chan error, 1)
 	go func() {
 		for {
@@ -106,50 +159,22 @@ func runServer(a *args) (int, error) {
 				acceptErr <- err
 				return
 			}
-			mu.Lock()
-			full := len(conns) >= maxConnections
-			mu.Unlock()
-			if full {
-				logf("refusing %s: %d connections are open", nc.RemoteAddr(), maxConnections)
-				_ = nc.Close()
+			if tlsConfig == nil {
+				serve(nc)
 				continue
 			}
-			c := &conn{peer: nc.RemoteAddr().String()}
-			lcfg := cfg
-			if security != nil {
-				if c.sl, err = security.link(false, st.ca); err != nil {
-					logf("security: %v", err)
-					_ = nc.Close()
-					continue
-				}
-				lcfg.Security = c.sl
-			}
-			cctx, ccancel := context.WithCancel(ctx)
-			if c.sl != nil {
-				go c.sl.Run(cctx)
-			}
-			e := event("connection-opened")
-			e["peer"] = c.peer
-			emit(e)
-			c.link = cs104.Accept(cctx, nc, lcfg, func(l *cs104.Link) { st.started(c, l) }, nil)
-			mu.Lock()
-			conns[c] = struct{}{}
-			mu.Unlock()
-			wg.Add(1)
+			// A station with --tls accepts nothing but TLS: only a session
+			// is a connection of the contract. t0 bounds the handshake.
 			go func() {
-				defer wg.Done()
-				defer ccancel()
-				for raw := range c.link.ASDUs() {
-					st.handle(cctx, c, raw)
+				hctx, hcancel := context.WithTimeout(ctx, cfg.T0)
+				defer hcancel()
+				tc := tls.Server(nc, tlsConfig)
+				if err := tc.HandshakeContext(hctx); err != nil {
+					logf("no TLS session with %s: %v", nc.RemoteAddr(), err)
+					_ = nc.Close()
+					return
 				}
-				<-c.link.Done()
-				c.watch.Wait()
-				mu.Lock()
-				delete(conns, c)
-				mu.Unlock()
-				e := event("connection-closed")
-				e["peer"] = c.peer
-				emit(e)
+				serve(tc)
 			}()
 		}
 	}()
@@ -168,6 +193,9 @@ func runServer(a *args) (int, error) {
 	if security != nil {
 		ready["secure"] = true
 	}
+	if tlsConfig != nil {
+		ready["tls"] = true
+	}
 	emit(ready)
 
 	select {
@@ -178,11 +206,11 @@ func runServer(a *args) (int, error) {
 	}
 	_ = os.Remove(readyFile)
 	_ = ln.Close()
+	// Every link and handshake runs under ctx.
 	mu.Lock()
-	for c := range conns {
-		c.link.Close()
-	}
+	stopping = true
 	mu.Unlock()
+	cancel()
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
 	select {

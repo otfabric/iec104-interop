@@ -71,6 +71,12 @@ expect_exit 2 "server --secure without key material" "${IMAGE}" server --secure
 expect_exit 2 "client --mal without --secure" "${IMAGE}" client interrogate --host nowhere --mal 4
 expect_exit 2 "server --roles without --secure" "${IMAGE}" server --roles viewer
 
+# A TLS flag is unknown to an image without tls; for one with it, every flag
+# needs --tls and --tls needs the identity.
+expect_exit 2 "server --tls without key material" "${IMAGE}" server --tls
+expect_exit 2 "client --tls-cert without --tls" "${IMAGE}" client interrogate --host nowhere --tls-cert /no/such/file
+expect_exit 2 "server --tls-trust without --tls" "${IMAGE}" server --tls-trust /no/such/file
+
 # ---- an invalid fixture stops the server before it listens ----
 bad=$(mktemp -d)
 trap 'rm -rf "${bad}"; cleanup' EXIT
@@ -155,6 +161,35 @@ if jq -e '.features.secureAuthentication == true' <<<"${caps}" >/dev/null 2>&1; 
         expect_exit 2 "client with a key that is not a key" "${DOCKER_ARGS[@]}" "${IMAGE}" client interrogate \
             --host nowhere --secure --security-cert /secrets/scada.pem --security-key /secrets/scada.pem \
             --security-trust /secrets/ca.pem
+        DOCKER_ARGS=()
+    else
+        fail "cannot make key material with openssl"
+    fi
+fi
+
+# ---- tls: the ready event of a TLS server, and files that cannot be loaded ----
+if jq -e '.features.tlsServer == true or .features.tlsClient == true' <<<"${caps}" >/dev/null 2>&1; then
+    tlsdir=$(mktemp -d)
+    trap 'rm -rf "${bad}" "${tlsdir}" "${secrets:-}"; cleanup' EXIT
+    if make_identities "${tlsdir}"; then
+        DOCKER_ARGS=(-v "${tlsdir}:/secrets:ro")
+        if jq -e '.features.tlsServer == true' <<<"${caps}" >/dev/null 2>&1; then
+            name=$(start_server "${ADAPTER}" --tls --tls-cert /secrets/station.pem \
+                --tls-key /secrets/station.key --tls-trust /secrets/ca.pem)
+            if wait_ready "${name}"; then ok "TLS server becomes ready"; else fail "TLS server did not become ready"; fi
+            first=$(docker logs "${name}" 2>/dev/null | head -1)
+            if jq -e '.event == "ready" and .tls == true' <<<"${first}" >/dev/null 2>&1
+            then ok "ready event of a TLS server"; else fail "ready event without tls: ${first}"; fi
+            stop_server "${name}"
+            expect_exit 2 "server --tls with a key that is not a key" "${DOCKER_ARGS[@]}" "${IMAGE}" server \
+                --tls --tls-cert /secrets/station.pem --tls-key /secrets/station.pem --tls-trust /secrets/ca.pem
+        fi
+        if jq -e '.features.tlsClient == true' <<<"${caps}" >/dev/null 2>&1; then
+            expect_exit 2 "client --tls without a trust file" "${DOCKER_ARGS[@]}" "${IMAGE}" client interrogate \
+                --host nowhere --tls --tls-cert /secrets/scada.pem --tls-key /secrets/scada.key
+            expect_exit 2 "client --tls with a key that is not a key" "${DOCKER_ARGS[@]}" "${IMAGE}" client interrogate \
+                --host nowhere --tls --tls-cert /secrets/scada.pem --tls-key /secrets/scada.pem --tls-trust /secrets/ca.pem
+        fi
         DOCKER_ARGS=()
     else
         fail "cannot make key material with openssl"

@@ -29,3 +29,11 @@ feature.group.broadcast	ro	0	ok=true error=- conf=7 term=true asdus=C_IC_NA_1/7,
 feature.group.unknown-station	ro	1	ok=false error=negative-confirmation conf=46n term=false asdus=C_IC_NA_1/46	server:groupInterrogation,client:groupInterrogation	@ext	interrogate --qoi 21 --common-address 7
 feature.quality.read-good	ro	0	ok=true error=- conf= term=false asdus=M_BO_NA_1/5	server:pointQualityOnBitstring	@ext	read --ioa 103
 feature.quality.read-flags	ro	0	ok=true error=- conf= term=false asdus=M_BO_NA_1/5	server:pointQualityOnBitstring	@ext	read --ioa 104
+# Transport security: mutual TLS.
+feature.tls.counter-interrogate	ro	0	ok=true error=- conf=7 term=true asdus=C_CI_NA_1/7,M_IT_NA_1/37,C_CI_NA_1/10 tls=true	server:tls,client:tls	@ext @tls-station --tls-trust /secrets/ca.pem	counter-interrogate @tls-scada --tls-trust /secrets/ca.pem
+feature.tls.group	ro	0	ok=true error=- conf=7 term=true asdus=C_IC_NA_1/7,M_SP_NA_1/21,M_DP_NA_1/21,C_IC_NA_1/10 tls=true	server:tls,client:tls,server:groupInterrogation,client:groupInterrogation	@ext @tls-station --tls-trust /secrets/ca.pem	interrogate --qoi 21 @tls-scada --tls-trust /secrets/ca.pem
+feature.tls.command	rw	0	ok=true error=- conf=7 term=true asdus=C_SC_NA_1/7,M_SP_TB_1/11,C_SC_NA_1/10 tls=true	server:tls,client:tls	@ext @tls-station --tls-trust /secrets/ca.pem	command --type C_SC_NA_1 --ioa 500 --value false @tls-scada --tls-trust /secrets/ca.pem
+# Each of these must fail: a stack that ignored --tls-trust, or that ignored --tls altogether, would pass the cases above and not these.
+feature.tls.client-not-trusted	ro	1	ok=false error=tls-failed conf= term=false asdus= tls=false	server:tls,client:tls	@ext @tls-station --tls-trust /secrets/ca.pem	counter-interrogate @tls-rogue --tls-trust /secrets/ca.pem --timeout-ms 3000
+feature.tls.station-not-trusted	ro	1	ok=false error=tls-failed conf= term=false asdus= tls=false	server:tls,client:tls	@ext @tls-station --tls-trust /secrets/ca.pem	counter-interrogate @tls-scada --tls-trust /secrets/other-ca.pem --timeout-ms 3000
+feature.tls.station-without-tls	ro	1	ok=false error=tls-failed conf= term=false asdus= tls=false	client:tls	@ext	counter-interrogate @tls-scada --tls-trust /secrets/ca.pem --timeout-ms 3000

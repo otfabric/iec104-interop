@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"net"
@@ -343,6 +344,10 @@ func runClient(op string, a *args) (int, error) {
 	if err := a.algorithms(security); err != nil {
 		return 0, err
 	}
+	tlsConfig, err := a.tlsFlags(security != nil)
+	if err != nil {
+		return 0, err
+	}
 	if err := a.finish("client " + op); err != nil {
 		return 0, err
 	}
@@ -366,15 +371,44 @@ func runClient(op string, a *args) (int, error) {
 		connected, started, stopdt, secured bool
 		exitCode                            = exitOperationFailed
 	)
-	operation := func() error {
+	// open makes a connection to the station, with --tls up to the end of
+	// the handshake, and runs the protocol on it in the stopped state.
+	open := func() (*cs104.Link, error) {
 		nc, err := (&net.Dialer{Timeout: connectTimeout}).DialContext(ctx, "tcp",
 			net.JoinHostPort(host, strconv.Itoa(port)))
 		if err != nil {
 			exitCode = exitConnectFailed
-			return failf("connect-failed", "cannot connect to the station: %v", err)
+			return nil, failf("connect-failed", "cannot connect to the station: %v", err)
 		}
 		connected = true
-		link := cs104.Open(ctx, nc, cfg)
+		if tlsConfig != nil {
+			tc := tls.Client(nc, tlsConfig)
+			hctx, hcancel := context.WithTimeout(ctx, timeout)
+			err := tc.HandshakeContext(hctx)
+			hcancel()
+			if err != nil {
+				_ = nc.Close()
+				return nil, failf("tls-failed", "no TLS session with the station: %v", err)
+			}
+			nc = tc
+		}
+		return cs104.Open(ctx, nc, cfg), nil
+	}
+	// startFailure names what kept STARTDT con from arriving.
+	startFailure := func(closed bool) error {
+		switch {
+		case tlsConfig != nil:
+			return failf("tls-failed", "no STARTDT con over the TLS session")
+		case closed:
+			return failf("connection-lost", "connection closed while waiting for STARTDT con")
+		}
+		return failf("startdt-timeout", "no STARTDT con from the station")
+	}
+	operation := func() error {
+		link, err := open()
+		if err != nil {
+			return err
+		}
 		p.link = link
 		go func() {
 			for raw := range link.ASDUs() {
@@ -395,10 +429,8 @@ func runClient(op string, a *args) (int, error) {
 		err = link.StartDT(sctx)
 		scancel()
 		if err != nil {
-			if s.waitFor(func() bool { return false }, 20*time.Millisecond); s.isClosed() {
-				return failf("connection-lost", "connection closed while waiting for STARTDT con")
-			}
-			return failf("startdt-timeout", "no STARTDT con from the station")
+			s.waitFor(func() bool { return false }, 20*time.Millisecond)
+			return startFailure(s.isClosed())
 		}
 		started = true
 
@@ -576,6 +608,9 @@ func runClient(op string, a *args) (int, error) {
 	}
 	if security != nil {
 		r["secured"] = secured
+	}
+	if tlsConfig != nil {
+		r["tls"] = started
 	}
 	r["confirmations"] = append([]object{}, s.confirmations...)
 	r["terminated"] = s.terminated

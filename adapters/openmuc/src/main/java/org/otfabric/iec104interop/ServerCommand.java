@@ -74,6 +74,7 @@ final class ServerCommand {
         Path readyFile = Path.of(args.string("--ready-file", Main.DEFAULT_READY_FILE));
         int port = args.integer("--port", 2404);
         Args.Apci apci = args.apci();
+        Tls tls = Tls.fromArgs(args);
         args.finish("server");
         if (port < 1 || port > 65535) {
             throw new Args.UsageException("--port: " + port + " is not a TCP port");
@@ -89,7 +90,7 @@ final class ServerCommand {
         Files.deleteIfExists(readyFile);
 
         ServerCommand station = new ServerCommand(fx);
-        Server server = Server.builder()
+        Server.Builder builder = Server.builder()
                 .setBindAddr(InetAddress.getByName(bind))
                 .setPort(port)
                 .setMaxConnections(16)
@@ -97,8 +98,11 @@ final class ServerCommand {
                 .setMaxUnconfirmedIPdusReceived(apci.w)
                 .setMaxTimeNoAckReceived(apci.t1 * 1000)
                 .setMaxTimeNoAckSent(apci.t2 * 1000)
-                .setMaxIdleTime(apci.t3 * 1000)
-                .build();
+                .setMaxIdleTime(apci.t3 * 1000);
+        if (tls != null) {
+            builder.setSocketFactory(tls.serverFactory());
+        }
+        Server server = builder.build();
 
         CountDownLatch stopped = new CountDownLatch(1);
         try {
@@ -131,6 +135,9 @@ final class ServerCommand {
         ready.addProperty("address", bind + ":" + port);
         ready.addProperty("fixture", fx.name);
         ready.addProperty("commonAddress", fx.commonAddress);
+        if (tls != null) {
+            ready.addProperty("tls", true);
+        }
         Main.emit(ready);
 
         stopped.await();

@@ -133,6 +133,11 @@ const char* argUnknown(Args* a);
 /* Applies --k --w --t0 --t1 --t2 --t3 to params. Returns false on a bad value. */
 bool applyApciArgs(Args* a, CS104_APCIParameters params);
 
+/* Reads the transport security flags. False is a usage error: a flag without
+ * --tls, or a key or certificate that cannot be loaded. *out stays NULL without
+ * --tls. */
+bool tlsFromArgs(Args* a, TLSConfiguration* out);
+
 /* ---- commands ---- */
 
 int runServer(Args* args);

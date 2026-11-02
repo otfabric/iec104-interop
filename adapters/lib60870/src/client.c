@@ -21,6 +21,11 @@ static struct {
     bool startdtCon;
     bool stopdtCon;
     bool closed;
+    bool opened;          /* the connection's thread is through the handshake */
+    bool tcpUp;           /* --tls: TCP is connected, the handshake has begun */
+    bool tcpFailed;       /* no TCP connection */
+    bool handshakeFailed;
+    bool handshakeStuck;  /* the connection's thread cannot be joined */
     bool terminated;
     int negativeCot; /* cause of the last refusal, 0 when none */
     bool readAnswered;
@@ -92,10 +97,11 @@ static void connectionHandler(void* parameter, CS104_Connection connection, CS10
     (void)connection;
     pthread_mutex_lock(&st.lock);
     switch (ev) {
+    case CS104_CONNECTION_OPENED: st.opened = true; break;
     case CS104_CONNECTION_STARTDT_CON_RECEIVED: st.startdtCon = true; break;
     case CS104_CONNECTION_STOPDT_CON_RECEIVED: st.stopdtCon = true; break;
-    case CS104_CONNECTION_CLOSED:
-    case CS104_CONNECTION_FAILED: st.closed = true; break;
+    case CS104_CONNECTION_FAILED: st.tcpFailed = true; /* fall through */
+    case CS104_CONNECTION_CLOSED: st.closed = true; break;
     default: break;
     }
     pthread_cond_broadcast(&st.changed);
@@ -180,6 +186,8 @@ static bool hasReadAnswer(int a) { (void)a; return st.readAnswered || st.negativ
 static bool hasAsdus(int n) { return n > 0 && st.asduCount >= n; }
 static bool never(int a) { (void)a; return false; }
 static bool hasFileEvent(int a) { (void)a; return st.fileEventNext < st.fileEventCount; }
+static bool hasTcpOutcome(int a) { (void)a; return st.tcpUp || st.tcpFailed; }
+static bool hasHandshakeOutcome(int a) { (void)a; return st.opened || st.handshakeFailed; }
 
 static bool parseBool(const char* s, bool* out)
 {
@@ -291,6 +299,61 @@ static bool awaitTermination(int timeoutMs)
     if (!waitFor(hasTermination, 0, timeoutMs))
         return st.closed ? failOp("connection-lost", "connection closed while waiting for termination%.0d", 0)
                          : failOp("timeout", "no activation termination from the station%.0d", 0);
+    return true;
+}
+
+/* ---- transport security ---- */
+
+/*
+ * lib60870-C runs the handshake inside TLSSocket_create on the connection's
+ * thread, in a loop without a timeout (hal/tls/mbedtls3/tls_mbedtls.c), holding
+ * the lock that CS104_Connection_connect polls (iec60870/cs104/cs104_connection.c),
+ * and tells the connection handler nothing when it fails. The linker option
+ * --wrap puts this in between, which is how a client knows that TCP is up, that
+ * the handshake failed, and when to stop waiting for it.
+ */
+void* __real_TLSSocket_create(void* socket, void* configuration, bool storeClientCert);
+void* __wrap_TLSSocket_create(void* socket, void* configuration, bool storeClientCert);
+
+void* __wrap_TLSSocket_create(void* socket, void* configuration, bool storeClientCert)
+{
+    pthread_mutex_lock(&st.lock);
+    st.tcpUp = true;
+    pthread_cond_broadcast(&st.changed);
+    pthread_mutex_unlock(&st.lock);
+
+    void* created = __real_TLSSocket_create(socket, configuration, storeClientCert);
+
+    pthread_mutex_lock(&st.lock);
+    st.handshakeFailed = created == NULL;
+    pthread_cond_broadcast(&st.changed);
+    pthread_mutex_unlock(&st.lock);
+    return created;
+}
+
+/* Establishes the connection, up to where STARTDT can be sent. */
+static bool establish(CS104_Connection con, bool tls, int connectTimeoutMs, int timeoutMs, bool* connected)
+{
+    if (!tls) {
+        if (!CS104_Connection_connect(con))
+            return failOp("connect-failed", "cannot connect to the station%.0d", 0);
+        *connected = true;
+        return true;
+    }
+    pthread_mutex_lock(&st.lock);
+    st.opened = st.tcpUp = st.tcpFailed = st.handshakeFailed = false;
+    pthread_mutex_unlock(&st.lock);
+    CS104_Connection_connectAsync(con);
+    /* The socket has this timeout of its own: a second more is only a margin. */
+    if (!waitFor(hasTcpOutcome, 0, connectTimeoutMs + 1000) || !st.tcpUp)
+        return failOp("connect-failed", "cannot connect to the station%.0d", 0);
+    *connected = true;
+    if (!waitFor(hasHandshakeOutcome, 0, timeoutMs)) {
+        st.handshakeStuck = true;
+        return failOp("tls-failed", "no TLS session within %d ms", timeoutMs);
+    }
+    if (!st.opened)
+        return failOp("tls-failed", "the TLS handshake failed%.0d", 0);
     return true;
 }
 
@@ -511,7 +574,13 @@ int runClient(const char* op, Args* args)
         return EXIT_USAGE;
     }
 
-    CS104_Connection con = CS104_Connection_create(host, port);
+    TLSConfiguration tls;
+    if (!tlsFromArgs(args, &tls))
+        return EXIT_USAGE;
+    if (tls)
+        TLSConfiguration_enableSessionResumption(tls, false); /* one process, one session */
+
+    CS104_Connection con = tls ? CS104_Connection_createSecure(host, port, tls) : CS104_Connection_create(host, port);
     struct sCS104_APCIParameters apci = *CS104_Connection_getAPCIParameters(con);
     if (!applyApciArgs(args, &apci))
         return EXIT_USAGE;
@@ -531,15 +600,16 @@ int runClient(const char* op, Args* args)
     bool connected = false, ok = false;
     int exitCode = EXIT_OPERATION_FAILED;
 
-    if (!CS104_Connection_connect(con)) {
-        failOp("connect-failed", "cannot connect to the station%.0d", 0);
-        exitCode = EXIT_CONNECT_FAILED;
+    if (!establish(con, tls != NULL, connectTimeoutMs, timeoutMs, &connected)) {
+        if (!connected)
+            exitCode = EXIT_CONNECT_FAILED;
         goto report;
     }
-    connected = true;
     CS104_Connection_sendStartDT(con);
     if (!waitFor(hasStartDt, 0, timeoutMs)) {
-        failOp("startdt-timeout", "no STARTDT con from the station%.0d", 0);
+        /* With TLS 1.3 this is also how a client learns that the station
+         * refused its certificate: the handshake ended before that. */
+        failOp(tls ? "tls-failed" : "startdt-timeout", "no STARTDT con from the station%.0d", 0);
         goto report;
     }
 
@@ -635,7 +705,8 @@ int runClient(const char* op, Args* args)
 report:
     if (ok)
         exitCode = EXIT_OK;
-    CS104_Connection_destroy(con); /* closes; no callback runs after this */
+    if (!st.handshakeStuck)
+        CS104_Connection_destroy(con); /* closes; no callback runs after this */
 
     cJSON* r = cJSON_CreateObject();
     cJSON_AddStringToObject(r, "schemaVersion", SCHEMA_VERSION);
@@ -655,6 +726,8 @@ report:
         cJSON_AddBoolToObject(r, "stopdtConfirmed", st.stopdtCon);
     cJSON_AddItemToObject(r, "confirmations", st.confirmations);
     cJSON_AddBoolToObject(r, "terminated", st.terminated);
+    if (tls)
+        cJSON_AddBoolToObject(r, "tls", st.startdtCon);
     if (kind == OP_FILE) {
         cJSON* f = cJSON_AddObjectToObject(r, "file");
         char digest[65];

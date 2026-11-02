@@ -351,6 +351,22 @@ while IFS=$'\t' read -r case_id state want_exit want_summary needs server_flags 
     done
 done < "${FEATURE_CASES}"
 
+# ---- tls: a client without TLS gets nothing from a station with it ----
+for server in "${ADAPTERS[@]}"; do
+    has "${server}" tlsServer || continue
+    name=$(feature_server ro "${server}" "$(feature_flags "@ext @tls-station --tls-trust /secrets/ca.pem")") \
+        || { fail "${server}: the TLS server did not start"; continue; }
+    for client in "${ADAPTERS[@]}"; do
+        pair="${client}->${server}"
+        at feature.tls.client-without-tls "${client}" "${server}"
+        has_role "${client}" client || { skip "${pair}: client without TLS"; continue; }
+        # Which error is the stack's own: its peer closed, or never answered.
+        doc=$(run_client "${client}" counter-interrogate --timeout-ms 3000 --host "${name}"); CLIENT_EXIT=$?
+        if [[ "${CLIENT_EXIT}" != 0 ]] && jq -e '.ok == false and .startdtConfirmed == false and (.asdus | length) == 0' <<<"${doc}" >/dev/null 2>&1
+        then ok "${pair}: no STARTDT con without TLS"; else fail "${pair}: a client without TLS got through to a TLS station: ${doc}"; fi
+    done
+done
+
 # ---- values: the groups and qualities of the extended fixture ----
 # The outcome line shows types and causes only; here the objects themselves
 # are compared with the fixture, which is what can fail when a flag or a group

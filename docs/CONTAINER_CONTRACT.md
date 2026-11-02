@@ -10,7 +10,7 @@ and changes only with the major version.
 
 | Version | Change |
 |---------|--------|
-| 1.3 | Interrogation groups and `groups` in fixtures, the feature `groupInterrogation`; a quality on `M_BO_NA_1`, the feature `pointQualityOnBitstring`; the fixture `extended` |
+| 1.3 | Interrogation groups and `groups` in fixtures, the feature `groupInterrogation`; a quality on `M_BO_NA_1`, the feature `pointQualityOnBitstring`; the fixture `extended`. The [transport security flags](#transport-security-flags) of IEC 62351-3, `tls` in the `ready` event and in the result document, the error `tls-failed`, the feature `tls` |
 | 1.2 | The [security flags](#security-flags) of the A-Profile of IEC 62351-5; `secure` in the `ready` event; `secured` in the result document; the error `security-failed`; a mirror with cause 17 counts as a confirmation; the feature `secureAuthentication` |
 | 1.1 | The `file-get` operation, its `file` result and the file transfer ASDU documents; the `file-transfer` server event; `files` in fixtures; the features `fileServer`, `fileClient` and `dataTransferEvents` |
 | 1.0 | First release |
@@ -27,6 +27,7 @@ What a *station* does with a request is defined by its fixture: see
 - [Image layout](#image-layout)
 - [Commands](#commands)
 - [Security flags](#security-flags)
+- [Transport security flags](#transport-security-flags)
 - [`server`](#server)
 - [`client`](#client)
 - [ASDU documents](#asdu-documents)
@@ -129,6 +130,41 @@ client sets up the association after STARTDT con and waits for it within
 Key material is mounted into the container: the files must be readable by
 uid 10001.
 
+## Transport security flags
+
+TLS with mutual authentication, as IEC 62351-3 profiles it for IEC 60870-5-104:
+the IEC 104 connection runs inside the TLS session. `server` accepts these flags with the feature `tlsServer`, and every `client`
+operation with the feature `tlsClient`; otherwise they are unknown flags (exit 2).
+The feature `tls` is true when an image has both.
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--tls` | off | Run the connection over TLS, version 1.2 or later. Without it every other flag of this table is a usage error |
+| `--tls-cert PATH` | required | Own certificate, PEM |
+| `--tls-key PATH` | required | Own private key, PEM, PKCS #8, on secp256r1 (P-256) |
+| `--tls-trust PATH` | required | The authorities that sign the remote station's certificate, PEM, one or more certificates |
+
+- Both sides present a certificate, and each refuses a certificate its
+  `--tls-trust` authorities did not sign. A file with a key or certificate that
+  cannot be loaded is a usage error, and nothing is sent.
+- A host name or address is not checked: the certificate says who the station
+  is, whatever the network calls it.
+- `--tls` with `--secure` is a usage error in this version of the contract.
+- The port does not change: `--port` still says it (IEC 62351-3's 19998 is for
+  the caller to pass).
+
+With `--tls`, the client's result document has `tls`. Everything that goes wrong
+between the TCP connection and STARTDT con is the error `tls-failed`, whatever
+the stack saw: a refused certificate, a station that does not speak TLS, a
+handshake or STARTDT that took longer than `--timeout-ms`, or a connection the
+station closed after a handshake (with TLS 1.3 a client learns only then that
+its certificate was refused). A station that cannot be reached is still
+`connect-failed`.
+
+A station with `--tls` accepts nothing but TLS: a client without TLS gets no
+STARTDT con. Key material is mounted into the container: the files must be
+readable by uid 10001.
+
 ## `server`
 
 Runs a controlled station that serves one fixture until it receives SIGTERM
@@ -164,7 +200,7 @@ One JSON object per line on stdout.
 
 | `event` | Other fields | When |
 |---------|--------------|------|
-| `ready` | `adapter`, `address`, `fixture`, `commonAddress`; `secure` (true) with `--secure` | Once, when the station accepts connections |
+| `ready` | `adapter`, `address`, `fixture`, `commonAddress`; `secure` (true) with `--secure`; `tls` (true) with `--tls` | Once, when the station accepts connections |
 | `connection-opened` | `peer` (`ip:port`) | A controlling station connected |
 | `data-transfer-started` | `peer` | STARTDT confirmed. Only with the feature `dataTransferEvents` |
 | `data-transfer-stopped` | `peer` | STOPDT confirmed. Only with the feature `dataTransferEvents` |
@@ -214,6 +250,7 @@ the operation, close the connection.
 | `--collect-ms N` | 0 | After a successful operation, keep receiving for this long before closing |
 | APCI flags | | |
 | [Security flags](#security-flags) | | |
+| [Transport security flags](#transport-security-flags) | | |
 
 ### Operations
 
@@ -293,6 +330,7 @@ past argument parsing, including failures.
 | `confirmations` | array | `{ "cot", "negative" }` for each mirror of the request that confirms or refuses it, in order |
 | `terminated` | boolean | An activation termination of the request was received |
 | `secured` | boolean | With `--secure` only: the association was established |
+| `tls` | boolean | With `--tls` only: STARTDT con arrived over the TLS session |
 | `file` | object | `file-get` only: `ioa`, `name`, `length` (announced by file ready), `received` (octets that arrived), `sections` (sections called) and `sha256` (lower-case hex of what arrived) |
 | `asdus` | array | Every ASDU received, in order: see [ASDU documents](#asdu-documents) |
 | `elapsedMs` | number | Wall-clock duration |
@@ -312,6 +350,7 @@ authorized).
 | `timeout` | The station did not answer in time | 1 |
 | `negative-confirmation` | The station refused: negative confirmation or cause 17 or 44..47 | 1 |
 | `security-failed` | `--secure`: no association with the station within `--timeout-ms` | 1 |
+| `tls-failed` | `--tls`: no TLS session with the station that got as far as STARTDT con | 1 |
 | `connection-lost` | The connection closed during the operation | 1 |
 | `failed` | Anything else; see `message` | 1 |
 

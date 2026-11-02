@@ -153,13 +153,14 @@ func capabilities() object {
 			"apciParameters":          true,
 			"multipleConnections":     true,
 			"pointQualityOnBitstring": true,
-			// The library has TLS; the contract has no flags for it.
-			"tls":                  false,
-			"dataTransferEvents":   true,
-			"fileTransfer":         true,
-			"fileServer":           true,
-			"fileClient":           true,
-			"secureAuthentication": true,
+			"tls":                     true,
+			"tlsServer":               true,
+			"tlsClient":               true,
+			"dataTransferEvents":      true,
+			"fileTransfer":            true,
+			"fileServer":              true,
+			"fileClient":              true,
+			"secureAuthentication":    true,
 		},
 		"pointTypes": []string{"M_SP_NA_1", "M_DP_NA_1", "M_ST_NA_1", "M_BO_NA_1", "M_ME_NA_1", "M_ME_NB_1",
 			"M_ME_NC_1", "M_IT_NA_1"},
@@ -170,7 +171,7 @@ func capabilities() object {
 }
 
 // switches take no value; every other flag does.
-var switches = map[string]bool{"secure": true, "with-time": true}
+var switches = map[string]bool{"secure": true, "tls": true, "with-time": true}
 
 // flags holds the flags of a command. A command takes what it needs and finish
 // refuses the rest: an unknown flag is a usage error, never ignored.

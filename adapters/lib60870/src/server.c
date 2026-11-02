@@ -435,7 +435,11 @@ int runServer(Args* args)
     if (!argInt(args, "--port", 2404, &port) || port < 1 || port > 65535)
         return EXIT_USAGE;
 
-    CS104_Slave slave = CS104_Slave_create(1024, 1024);
+    TLSConfiguration tls;
+    if (!tlsFromArgs(args, &tls))
+        return EXIT_USAGE;
+
+    CS104_Slave slave = tls ? CS104_Slave_createSecure(1024, 1024, tls) : CS104_Slave_create(1024, 1024);
     if (!applyApciArgs(args, CS104_Slave_getConnectionParameters(slave)))
         return EXIT_USAGE;
     if (argUnknown(args) != NULL) {
@@ -511,6 +515,8 @@ int runServer(Args* args)
     cJSON_AddStringToObject(e, "address", address);
     cJSON_AddStringToObject(e, "fixture", fx.name);
     cJSON_AddNumberToObject(e, "commonAddress", fx.commonAddress);
+    if (tls)
+        cJSON_AddTrueToObject(e, "tls");
     emitJson(e);
 
     while (running && CS104_Slave_isRunning(slave))

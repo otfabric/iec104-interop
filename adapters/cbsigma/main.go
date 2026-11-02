@@ -39,10 +39,10 @@ var (
 
 const usage = `usage: iec104-interop <command>
 
-  server [--fixture PATH] [--bind-address ADDR] [--port N] [--ready-file PATH] [APCI] [SECURITY]
+  server [--fixture PATH] [--bind-address ADDR] [--port N] [--ready-file PATH] [APCI] [SECURITY] [TLS]
          [--roles ROLE,...]
   client <operation> --host HOST [--port N] [--common-address N] [--originator-address N]
-         [--timeout-ms N] [--connect-timeout-ms N] [--collect-ms N] [APCI] [SECURITY]
+         [--timeout-ms N] [--connect-timeout-ms N] [--collect-ms N] [APCI] [SECURITY] [TLS]
          [--mal N] [--dpa N] [operation flags]
       connect             [--hold-ms N]
       interrogate         [--qoi N]
@@ -61,6 +61,7 @@ const usage = `usage: iec104-interop <command>
   APCI:     [--k N] [--w N] [--t0 S] [--t1 S] [--t2 S] [--t3 S]
   SECURITY: [--secure --security-cert PATH --security-key PATH --security-trust PATH
             [--association-id N]]
+  TLS:      [--tls --tls-cert PATH --tls-key PATH --tls-trust PATH]
 
 See docs/CONTAINER_CONTRACT.md in https://github.com/otfabric/iec104-interop
 `
@@ -117,13 +118,14 @@ func printCapabilities() int {
 			"apciParameters":          true,
 			"multipleConnections":     true,
 			"pointQualityOnBitstring": true,
-			// The library has TLS (iotsec); the contract has no flags for it.
-			"tls":                  false,
-			"dataTransferEvents":   true,
-			"fileTransfer":         true,
-			"fileServer":           true,
-			"fileClient":           true,
-			"secureAuthentication": true,
+			"tls":                     true,
+			"tlsServer":               true,
+			"tlsClient":               true,
+			"dataTransferEvents":      true,
+			"fileTransfer":            true,
+			"fileServer":              true,
+			"fileClient":              true,
+			"secureAuthentication":    true,
 		},
 		"pointTypes": []string{"M_SP_NA_1", "M_DP_NA_1", "M_ST_NA_1", "M_BO_NA_1", "M_ME_NA_1", "M_ME_NB_1",
 			"M_ME_NC_1", "M_IT_NA_1"},

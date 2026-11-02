@@ -5,6 +5,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -30,6 +31,8 @@ import javax.net.SocketFactory;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLServerSocket;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManagerFactory;
 
 /**
@@ -141,8 +144,6 @@ final class Tls {
 
         SSLContext context = SSLContext.getInstance("TLS");
         context.init(kmf.getKeyManagers(), tmf.getTrustManagers(), null);
-        // The sockets of both factories start from these: version 1.2 or later.
-        context.getDefaultSSLParameters().setProtocols(PROTOCOLS);
         return context;
     }
 
@@ -151,7 +152,39 @@ final class Tls {
      * that fails or hangs is something that happens to STARTDT.
      */
     SocketFactory clientFactory() {
-        return context.getSocketFactory();
+        SSLSocketFactory inner = context.getSocketFactory();
+        return new SocketFactory() {
+            private Socket versions(Socket s) {
+                ((SSLSocket) s).setEnabledProtocols(PROTOCOLS);
+                return s;
+            }
+
+            @Override
+            public Socket createSocket() throws IOException {
+                return versions(inner.createSocket());
+            }
+
+            @Override
+            public Socket createSocket(String host, int port) throws IOException {
+                return versions(inner.createSocket(host, port));
+            }
+
+            @Override
+            public Socket createSocket(String host, int port, InetAddress local, int localPort) throws IOException {
+                return versions(inner.createSocket(host, port, local, localPort));
+            }
+
+            @Override
+            public Socket createSocket(InetAddress host, int port) throws IOException {
+                return versions(inner.createSocket(host, port));
+            }
+
+            @Override
+            public Socket createSocket(InetAddress host, int port, InetAddress local, int localPort)
+                    throws IOException {
+                return versions(inner.createSocket(host, port, local, localPort));
+            }
+        };
     }
 
     /**

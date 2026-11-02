@@ -99,6 +99,7 @@ run_client() {
 #   rogue         a controlling station nobody trusts (self-signed)
 #   pin-station   self-signed controlled station, trusted by pin
 #   pin-scada     self-signed controlling station, trusted by pin
+#   other-ca      an authority that signed none of these
 # Mount <dir> read-only; the files are readable by the uid of the images.
 make_identities() {
     local dir="$1" n
@@ -120,6 +121,9 @@ make_identities() {
             -keyout "${dir}/${n}.key" -out "${dir}/${n}.pem" -subj "/CN=${n}" \
             -addext basicConstraints=critical,CA:FALSE 2>/dev/null || return 1
     done
+    openssl req -x509 -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 \
+        -keyout "${dir}/other-ca.key" -out "${dir}/other-ca.pem" -subj "/CN=iec104-interop other CA" \
+        -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign 2>/dev/null || return 1
     rm -f "${dir}"/*.csr
     chmod 644 "${dir}"/*
 }

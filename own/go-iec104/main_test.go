@@ -5,10 +5,17 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -144,6 +151,11 @@ func TestUsageErrors(t *testing.T) {
 		{"server", "--port", "0"},
 		{"server", "--secure"},
 		{"server", "--roles", "VIEWER"},
+		{"server", "--tls"},
+		{"server", "--tls-trust", "t"},
+		{"client", "connect", "--host", "h", "--tls"},
+		{"client", "connect", "--host", "h", "--tls-cert", "c"},
+		{"client", "connect", "--host", "h", "--tls", "--tls-cert", "/no/such", "--tls-key", "/no/such", "--tls-trust", "/no/such"},
 	} {
 		if code := run(args); code != exitUsage {
 			t.Errorf("%v: exit %d, want %d", args, code, exitUsage)
@@ -188,14 +200,14 @@ func TestConnectFailed(t *testing.T) {
 
 // startServer runs the server until the test ends and returns the common client
 // flags.
-func startServer(t *testing.T) []string {
+func startServer(t *testing.T, extra ...string) []string {
 	t.Helper()
 	port := freePort(t)
 	readyFile := filepath.Join(t.TempDir(), "ready")
 	done := make(chan int, 1)
 	go func() {
-		done <- run([]string{"server", "--bind-address", "127.0.0.1", "--port", port,
-			"--fixture", writeFixture(t, testFixture), "--ready-file", readyFile})
+		done <- run(append([]string{"server", "--bind-address", "127.0.0.1", "--port", port,
+			"--fixture", writeFixture(t, testFixture), "--ready-file", readyFile}, extra...))
 	}()
 	t.Cleanup(func() {
 		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
@@ -293,6 +305,167 @@ func errorCode(r object) string {
 		return e["code"].(string)
 	}
 	return ""
+}
+
+// writeCertificate signs a certificate for the name with the parent, or itself,
+// and writes it and its key as name.pem and name.key in dir.
+func writeCertificate(t *testing.T, dir, name string, isCA bool, parent *x509.Certificate, parentKey *ecdsa.PrivateKey) (*x509.Certificate, *ecdsa.PrivateKey) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: name},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: isCA, BasicConstraintsValid: true,
+		KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign}
+	if parent == nil {
+		parent, parentKey = template, key
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, parent, key.Public(), parentKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der8, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for file, block := range map[string]*pem.Block{name + ".pem": {Type: "CERTIFICATE", Bytes: der}, name + ".key": {Type: "PRIVATE KEY", Bytes: der8}} {
+		if err := os.WriteFile(filepath.Join(dir, file), pem.EncodeToMemory(block), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return cert, key
+}
+
+// tlsIdentities writes an authority with a station and a controlling station, a
+// self-signed rogue and an authority that signed nothing.
+func tlsIdentities(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	ca, caKey := writeCertificate(t, dir, "ca", true, nil, nil)
+	writeCertificate(t, dir, "station", false, ca, caKey)
+	writeCertificate(t, dir, "scada", false, ca, caKey)
+	writeCertificate(t, dir, "rogue", true, nil, nil)
+	writeCertificate(t, dir, "other-ca", true, nil, nil)
+	return dir
+}
+
+func tlsFlags(dir, name, trust string) []string {
+	return []string{"--tls", "--tls-cert", filepath.Join(dir, name+".pem"), "--tls-key", filepath.Join(dir, name+".key"),
+		"--tls-trust", filepath.Join(dir, trust+".pem")}
+}
+
+// attempt runs one client operation that may fail before a session exists, so
+// that no server event can be waited for.
+func attempt(t *testing.T, out *output, common []string, op string, args ...string) (int, object) {
+	t.Helper()
+	code := run(append(append([]string{"client", op}, common...), args...))
+	for _, d := range out.take(t) {
+		if _, isEvent := d["event"]; !isEvent {
+			return code, d
+		}
+	}
+	t.Fatalf("%s: no result, exit %d", op, code)
+	return code, nil
+}
+
+func TestTLSWithSecureIsAUsageError(t *testing.T) {
+	capture(t)
+	dir := tlsIdentities(t)
+	both := append(tlsFlags(dir, "scada", "ca"), "--secure", "--security-cert", filepath.Join(dir, "scada.pem"),
+		"--security-key", filepath.Join(dir, "scada.key"), "--security-trust", filepath.Join(dir, "ca.pem"))
+	for _, args := range [][]string{append([]string{"client", "connect", "--host", "h"}, both...), append([]string{"server"}, both...)} {
+		if code := run(args); code != exitUsage {
+			t.Errorf("%v: exit %d, want %d", args, code, exitUsage)
+		}
+	}
+}
+
+func TestTLSKeyThatIsNotAKey(t *testing.T) {
+	capture(t)
+	dir := tlsIdentities(t)
+	args := []string{"--tls", "--tls-cert", filepath.Join(dir, "scada.pem"), "--tls-key", filepath.Join(dir, "scada.pem"),
+		"--tls-trust", filepath.Join(dir, "ca.pem")}
+	for _, a := range [][]string{append([]string{"client", "connect", "--host", "h"}, args...), append([]string{"server"}, args...)} {
+		if code := run(a); code != exitUsage {
+			t.Errorf("%v: exit %d, want %d", a, code, exitUsage)
+		}
+	}
+}
+
+func TestTLSStation(t *testing.T) {
+	out := capture(t)
+	dir := tlsIdentities(t)
+	common := startServer(t, tlsFlags(dir, "station", "ca")...)
+	ready := out.take(t)
+	if len(ready) != 1 || ready[0]["tls"] != true {
+		t.Fatalf("ready event %v", ready)
+	}
+
+	t.Run("mutual", func(t *testing.T) {
+		r, events := operate(t, out, common, "counter-interrogate", tlsFlags(dir, "scada", "ca")...)
+		if r["tls"] != true || r["terminated"] != true {
+			t.Errorf("result %v", r)
+		}
+		find(t, events, "data-transfer-started")
+	})
+
+	// A station name that is not in the certificate is no reason to refuse it.
+	t.Run("no host name check", func(t *testing.T) {
+		code, r := attempt(t, out, common, "connect", tlsFlags(dir, "scada", "ca")...)
+		if code != exitOK || r["tls"] != true {
+			t.Errorf("exit %d, result %v", code, r)
+		}
+	})
+
+	for name, identity := range map[string][]string{
+		"client not trusted":  {"rogue", "ca"},
+		"station not trusted": {"scada", "other-ca"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			code, r := attempt(t, out, common, "counter-interrogate", tlsFlags(dir, identity[0], identity[1])...)
+			if code != exitFailed || errorCode(r) != "tls-failed" || r["tls"] != false || r["connected"] != true || r["startdtConfirmed"] != false {
+				t.Errorf("exit %d, result %v", code, r)
+			}
+			if len(list(r["asdus"])) != 0 {
+				t.Errorf("result %v", r)
+			}
+		})
+	}
+
+	t.Run("client without TLS", func(t *testing.T) {
+		code, r := attempt(t, out, common, "counter-interrogate")
+		if code == exitOK || r["startdtConfirmed"] != false {
+			t.Errorf("exit %d, result %v", code, r)
+		}
+		if _, present := r["tls"]; present {
+			t.Errorf("tls is of --tls only: %v", r)
+		}
+	})
+}
+
+func TestTLSClientAgainstStationWithoutIt(t *testing.T) {
+	out := capture(t)
+	dir := tlsIdentities(t)
+	common := startServer(t)
+	out.take(t)
+	code, r := attempt(t, out, common, "counter-interrogate", tlsFlags(dir, "scada", "ca")...)
+	if code != exitFailed || errorCode(r) != "tls-failed" || r["tls"] != false {
+		t.Errorf("exit %d, result %v", code, r)
+	}
+}
+
+func TestTLSStationThatCannotBeReached(t *testing.T) {
+	out := capture(t)
+	dir := tlsIdentities(t)
+	code, r := attempt(t, out, []string{"--host", "127.0.0.1", "--port", freePort(t)}, "connect", tlsFlags(dir, "scada", "ca")...)
+	if code != exitConnect || errorCode(r) != "connect-failed" || r["connected"] != false {
+		t.Errorf("exit %d, result %v", code, r)
+	}
 }
 
 func TestAgainstOwnServer(t *testing.T) {

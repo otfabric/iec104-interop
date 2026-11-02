@@ -250,6 +250,67 @@ bool applyApciArgs(Args* a, CS104_APCIParameters p)
     return true;
 }
 
+/* ---- transport security ---- */
+
+static void tlsEvent(void* parameter, TLSEventLevel level, int code, const char* message, TLSConnection con)
+{
+    (void)parameter;
+    (void)level;
+    (void)code;
+    logf_("tls: %s (%s)", message, con ? TLSConfigVersion_toString(TLSConnection_getTLSVersion(con)) : "-");
+}
+
+bool tlsFromArgs(Args* a, TLSConfiguration* out)
+{
+    bool tls = argFlag(a, "--tls");
+    const char* cert = argString(a, "--tls-cert", NULL);
+    const char* key = argString(a, "--tls-key", NULL);
+    const char* trust = argString(a, "--tls-trust", NULL);
+    *out = NULL;
+    if (!tls) {
+        if (cert == NULL && key == NULL && trust == NULL)
+            return true;
+        logf_("--tls-cert, --tls-key and --tls-trust need --tls");
+        return false;
+    }
+    if (cert == NULL || key == NULL || trust == NULL) {
+        logf_("--tls needs --tls-cert, --tls-key and --tls-trust");
+        return false;
+    }
+
+    TLSConfiguration c = TLSConfiguration_create();
+    if (c == NULL) {
+        logf_("--tls: cannot set up TLS");
+        return false;
+    }
+    if (!TLSConfiguration_setOwnCertificateFromFile(c, cert)) {
+        logf_("--tls-cert: cannot load a certificate from %s", cert);
+        return false;
+    }
+    if (!TLSConfiguration_setOwnKeyFromFile(c, key, NULL)) {
+        logf_("--tls-key: cannot load a key from %s", key);
+        return false;
+    }
+    if (!TLSConfiguration_addCACertificateFromFile(c, trust)) {
+        logf_("--tls-trust: cannot load certificates from %s", trust);
+        return false;
+    }
+    /* IEC 62351-3: the chain is checked against the authorities, and any
+     * certificate they signed will do. These are the library's defaults, said
+     * out loud because they are the contract. */
+    TLSConfiguration_setChainValidation(c, true);
+    TLSConfiguration_setAllowOnlyKnownCertificates(c, false);
+    TLSConfiguration_setMinTlsVersion(c, TLS_VERSION_TLS_1_2);
+    /* The default of 1024 bits is for RSA: it refuses every key on P-256. */
+    TLSConfiguration_setMinimumKeyLength(c, 256);
+    /* The default list has one suite for a certificate on P-256 in TLS 1.2, and
+     * not the one every stack has. */
+    TLSConfiguration_addCipherSuite(c, TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256);
+    TLSConfiguration_setEventHandler(c, tlsEvent, NULL);
+    *out = c;
+    return true;
+}
+
 /* ---- SHA-256 (FIPS 180-4), for the file operation's result ---- */
 
 static const uint32_t SHA_K[64] = {

@@ -8,7 +8,7 @@ is not a reference: its tags are go-iec104 versions, and no harness release or
 `manifest.json` contains it.
 
 **For testing only.** It runs an unauthenticated IEC 104 server unless `--secure`
-is given. Do not expose it to a network you do not control. Old images stay
+or `--tls` is given. Do not expose it to a network you do not control. Old images stay
 available, so check
 [go-iec104 advisories](https://github.com/otfabric/go-iec104/security/advisories)
 for the version you pull.
@@ -70,8 +70,6 @@ make -f own/go-iec104/Makefile image smoke interop    # from the repository root
 ## What it cannot do
 
 Declared `false`:
-
-- `tls`: go-iec104 has TLS, but the contract has no flags for it.
 
 The contract also has no way to reach these parts of go-iec104, so they are not
 exposed: file upload and directory transfer, redundancy groups.

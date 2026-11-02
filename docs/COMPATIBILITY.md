@@ -21,7 +21,9 @@ below, and the cases it explains count as known bugs instead of failures.
 | `cbsigma` | [cB-Sigma/iec60870](https://github.com/cB-Sigma/iec60870) | v0.3.0 | v0.3.0 | Go module `github.com/cB-Sigma/iec60870@v0.3.0` (commit `d0cad7ab6b8905d21dca12f4f7364e788c80ae17`), checksum in `go.sum` | independent, Go |
 
 Everything else is on its latest release as of 2026-10-09: Debian 13
-(trixie), Eclipse Temurin 25, Maven 3.9, Gson 2.14.0, Go 1.27.2.
+(trixie), Eclipse Temurin 25, Maven 3.9, Gson 2.14.0, Go 1.27.2. Mbed TLS,
+compiled into lib60870-C for TLS, is pinned to 3.6.7, the latest of the 3.6 line
+that lib60870-C v2.4.1 builds with, by the SHA-256 of its release tarball.
 
 wendy512/iec104 v1.0.4 asks for go-iecp5 v1.2.5; v1.2.6 is a later tag on
 the same commit, so the adapter builds on the latest tag without a change in

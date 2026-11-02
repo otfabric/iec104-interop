@@ -42,10 +42,12 @@ over TCP and reads their output, and is not affected by their licence.
 |-----------|---------|---------|--------|
 | lib60870-C (MZ Automation GmbH) | v2.4.1, commit `7a388e3e133999e1ca77ba7521d55d074b7cd2bc` | GPL-3.0 | https://github.com/mz-automation/lib60870 |
 | cJSON (Debian `libcjson1`) | Debian trixie | MIT | https://github.com/DaveGamble/cJSON |
+| Mbed TLS, compiled into lib60870-C | 3.6.7, release tarball, SHA-256 `a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6` | Apache-2.0 OR GPL-2.0-or-later; used under Apache-2.0, which may be combined into a GPL-3.0 work | https://github.com/Mbed-TLS/mbedtls |
 | Adapter | this repository, `adapters/lib60870/` | GPL-3.0-or-later | https://github.com/otfabric/iec104-interop |
 | Base system | Debian trixie-slim | various; see `/usr/share/doc/*/copyright` in the image | https://www.debian.org |
 
-Licence text in the image: `/licenses/lib60870/COPYING`.
+Licence texts in the image: `/licenses/lib60870/COPYING` and
+`/licenses/mbedtls/LICENSE`.
 
 lib60870-C is also available from MZ Automation under a commercial licence.
 This repository uses the GPL-3.0 release only.

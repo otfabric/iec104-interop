@@ -417,6 +417,21 @@ func parseOperation(op string, f *flags) (func(*peer) error, *int, *int) {
 	return nil, nil, nil
 }
 
+// reachDialer says when the TCP connection stands, which is where a station that
+// cannot be reached ends and what TLS can get wrong begins.
+type reachDialer struct {
+	net.Dialer
+	reached func()
+}
+
+func (d *reachDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	conn, err := d.Dialer.DialContext(ctx, network, address)
+	if err == nil {
+		d.reached()
+	}
+	return conn, err
+}
+
 // secure waits for the association the endpoint runs once data transfer started.
 func (p *peer) secure(ep *sec.Endpoint) error {
 	deadline := time.NewTimer(p.timeout)
@@ -456,16 +471,27 @@ func runClient(op string, f *flags) int {
 	params := f.apci()
 	secure := f.security()
 	f.algorithms(secure)
+	transport := f.transport()
+	if secure != nil && transport != nil {
+		f.fail("--tls with --secure is not in the contract")
+	}
 	operation, fileIOA, fileName := parseOperation(op, f)
 	if err := f.finish(); err != nil {
 		return usage(err.Error())
 	}
 
 	s := &session{changed: make(chan struct{})}
+	var connected, started, stopped, secured bool
+	// The dial has --connect-timeout-ms and the handshake --timeout-ms.
+	connecting, stopConnecting := context.WithCancel(context.Background())
+	defer stopConnecting()
 	options := []client.Option{
 		client.WithParams(params), client.WithOriginator(oa), client.WithHandler(s),
 		client.WithAutoStart(false), client.WithRequestTimeout(timeout),
-		client.WithDialer(&net.Dialer{Timeout: connectTimeout}),
+		client.WithDialer(&reachDialer{Dialer: net.Dialer{Timeout: connectTimeout}, reached: func() {
+			connected = true
+			time.AfterFunc(timeout, stopConnecting)
+		}}),
 		client.WithStateHandler(func(state iec104.State, _ error) {
 			if state == iec104.StateDisconnected {
 				s.update(func() { s.closed = true })
@@ -480,26 +506,32 @@ func runClient(op string, f *flags) int {
 		}
 		options = append(options, client.WithSecurity(ep))
 	}
+	if transport != nil {
+		options = append(options, client.WithTLS(transport.client()))
+	}
 	c, err := client.New(net.JoinHostPort(host, strconv.Itoa(port)), options...)
 	if err != nil {
 		return usage(err.Error())
 	}
 	p := &peer{session: s, client: c, ca: ca, oa: oa, timeout: timeout}
 
-	var connected, started, stopped, secured bool
 	exit := exitFailed
 	err = func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
-		defer cancel()
-		if err := c.Connect(ctx); err != nil {
+		if err := c.Connect(connecting); err != nil {
+			if transport != nil && connected {
+				return failf("tls-failed", "no TLS session with the station: %v", err)
+			}
 			exit = exitConnect
 			return failf("connect-failed", "cannot connect to the station: %v", err)
 		}
-		connected = true
 
-		ctx, cancel = context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		if err := c.StartDT(ctx); err != nil {
+			if transport != nil {
+				// With TLS 1.3 a client learns only here that its certificate was refused.
+				return failf("tls-failed", "no STARTDT con over the TLS session: %v", err)
+			}
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, iec104.ErrTimeout) {
 				return failf("startdt-timeout", "no STARTDT con from the station")
 			}
@@ -544,6 +576,9 @@ func runClient(op string, f *flags) int {
 	}
 	if secure != nil {
 		r["secured"] = secured
+	}
+	if transport != nil {
+		r["tls"] = started
 	}
 	r["confirmations"], r["terminated"] = append([]object{}, s.confirmations...), s.terminated
 	if op == "file-get" {

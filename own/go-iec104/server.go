@@ -3,6 +3,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"errors"
 	"net"
 	"os"
@@ -378,6 +379,10 @@ func runServer(f *flags) int {
 	params := f.apci()
 	secure := f.security()
 	f.accessRoles(secure)
+	transport := f.transport()
+	if secure != nil && transport != nil {
+		f.fail("--tls with --secure is not in the contract")
+	}
 	if err := f.finish(); err != nil {
 		return usage(err.Error())
 	}
@@ -406,6 +411,11 @@ func runServer(f *flags) int {
 		logf("cannot listen on %s: %v", address, err)
 		return exitFailed
 	}
+	if transport != nil {
+		// Serve takes the listener as it is; the library shakes hands with each
+		// connection, within t0, before it becomes a session.
+		ln = tls.NewListener(ln, transport.server())
+	}
 	srv, served, err := st.serve(ln, opts...)
 	if err != nil {
 		_ = ln.Close()
@@ -419,6 +429,9 @@ func runServer(f *flags) int {
 	ready["adapter"], ready["address"], ready["fixture"], ready["commonAddress"] = adapterName, address, fx.Name, fx.Station.CommonAddress
 	if secure != nil {
 		ready["secure"] = true
+	}
+	if transport != nil {
+		ready["tls"] = true
 	}
 	emit(ready)
 	if err := os.WriteFile(readyFile, []byte("ready\n"), 0o644); err != nil {

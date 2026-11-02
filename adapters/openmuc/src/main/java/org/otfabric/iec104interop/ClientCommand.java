@@ -470,6 +470,7 @@ final class ClientCommand implements ConnectionEventListener {
             throw new Args.UsageException("client: unknown operation " + op);
         }
         Args.Apci apci = args.apci();
+        Tls tls = Tls.fromArgs(args);
         args.finish("client " + op);
 
         ClientCommand state = new ClientCommand();
@@ -488,7 +489,7 @@ final class ClientCommand implements ConnectionEventListener {
 
         try {
             try {
-                con = new ClientConnectionBuilder(host)
+                ClientConnectionBuilder builder = new ClientConnectionBuilder(host)
                         .setPort(port)
                         .setConnectionTimeout(connectTimeoutMs)
                         .setMaxNumOfOutstandingIPdus(apci.k)
@@ -496,8 +497,11 @@ final class ClientCommand implements ConnectionEventListener {
                         .setMaxTimeNoAckReceived(apci.t1 * 1000)
                         .setMaxTimeNoAckSent(apci.t2 * 1000)
                         .setMaxIdleTime(apci.t3 * 1000)
-                        .setConnectionEventListener(state)
-                        .build();
+                        .setConnectionEventListener(state);
+                if (tls != null) {
+                    builder.setSocketFactory(tls.clientFactory());
+                }
+                con = builder.build();
             } catch (IOException e) {
                 exitCode = Main.EXIT_CONNECT_FAILED;
                 throw new Failure("connect-failed", "cannot connect to the station: " + e.getMessage());
@@ -507,9 +511,7 @@ final class ClientCommand implements ConnectionEventListener {
 
             // startDataTransfer waits for the confirmation for up to t1; bound it by --timeout-ms instead.
             final Connection c = con;
-            if (!uFrame(exec, c::startDataTransfer, timeoutMs)) {
-                throw new Failure("startdt-timeout", "no STARTDT con from the station");
-            }
+            start(exec, c, state, tls != null, timeoutMs);
             startdt = true;
 
             final int fQoi = qoi;
@@ -603,9 +605,7 @@ final class ClientCommand implements ConnectionEventListener {
         } catch (IOException | RuntimeException e) {
             failure = new Failure(state.isClosed() ? "connection-lost" : "failed", String.valueOf(e.getMessage()));
         } finally {
-            if (con != null) {
-                con.close();
-            }
+            close(con);
             exec.shutdownNow();
         }
 
@@ -624,6 +624,9 @@ final class ClientCommand implements ConnectionEventListener {
         }
         r.addProperty("connected", connected);
         r.addProperty("startdtConfirmed", startdt);
+        if (tls != null) {
+            r.addProperty("tls", startdt);
+        }
         if (op.equals("connect")) {
             r.addProperty("stopdtConfirmed", stopdt);
         }
@@ -656,6 +659,42 @@ final class ClientCommand implements ConnectionEventListener {
         return exitCode;
     }
 
+    /**
+     * Sends STARTDT and waits for the confirmation. With TLS the handshake is part of this (see Tls.clientFactory), and
+     * everything that goes wrong in it is the one error the contract has for it.
+     */
+    private static void start(ExecutorService exec, Connection c, ClientCommand state, boolean tls, int timeoutMs)
+            throws Failure, IOException {
+        boolean confirmed;
+        try {
+            confirmed = uFrame(exec, c::startDataTransfer, timeoutMs, () -> tls && state.isClosed());
+        } catch (IOException | RuntimeException e) {
+            if (tls) {
+                throw new Failure("tls-failed", "no TLS session with the station: " + e);
+            }
+            throw e;
+        }
+        if (!confirmed) {
+            throw tls ? new Failure("tls-failed", "no TLS session with the station that got as far as STARTDT con")
+                    : new Failure("startdt-timeout", "no STARTDT con from the station");
+        }
+    }
+
+    /** Closes without waiting long: closing a TLS socket whose handshake hangs is not bounded by anything else. */
+    private static void close(Connection c) {
+        if (c == null) {
+            return;
+        }
+        Thread t = new Thread(c::close, "close");
+        t.setDaemon(true);
+        t.start();
+        try {
+            t.join(1000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     @FunctionalInterface
     private interface UFrame {
         void run() throws IOException;
@@ -663,16 +702,30 @@ final class ClientCommand implements ConnectionEventListener {
 
     /** Runs a blocking STARTDT/STOPDT call with a deadline. Returns false when it was not confirmed in time. */
     private static boolean uFrame(ExecutorService exec, UFrame call, int timeoutMs) throws IOException {
+        return uFrame(exec, call, timeoutMs, () -> false);
+    }
+
+    /** The same, giving up as soon as abort holds. */
+    private static boolean uFrame(ExecutorService exec, UFrame call, int timeoutMs, BooleanSupplier abort)
+            throws IOException {
         Future<?> f = exec.submit(() -> {
             call.run();
             return null;
         });
+        long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
         try {
-            f.get(timeoutMs, TimeUnit.MILLISECONDS);
-            return true;
-        } catch (TimeoutException e) {
-            f.cancel(true);
-            return false;
+            while (true) {
+                long left = (deadline - System.nanoTime()) / 1_000_000L;
+                try {
+                    f.get(Math.max(0, Math.min(left, 50)), TimeUnit.MILLISECONDS);
+                    return true;
+                } catch (TimeoutException e) {
+                    if (left <= 50 || abort.getAsBoolean()) {
+                        f.cancel(true);
+                        return false;
+                    }
+                }
+            }
         } catch (ExecutionException e) {
             if (e.getCause() instanceof java.io.InterruptedIOException) {
                 return false;

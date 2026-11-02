@@ -40,9 +40,9 @@ public final class Main {
     private static final String USAGE = String.join("\n",
             "usage: iec104-interop <command>",
             "",
-            "  server [--fixture PATH] [--bind-address ADDR] [--port N] [--ready-file PATH] [APCI]",
+            "  server [--fixture PATH] [--bind-address ADDR] [--port N] [--ready-file PATH] [APCI] [TLS]",
             "  client <operation> --host HOST [--port N] [--common-address N] [--originator-address N]",
-            "         [--timeout-ms N] [--connect-timeout-ms N] [--collect-ms N] [APCI] [operation flags]",
+            "         [--timeout-ms N] [--connect-timeout-ms N] [--collect-ms N] [APCI] [TLS] [operation flags]",
             "      connect             [--hold-ms N]",
             "      interrogate         [--qoi N]",
             "      counter-interrogate [--qcc N]",
@@ -58,6 +58,7 @@ public final class Main {
             "  version",
             "",
             "  APCI: [--k N] [--w N] [--t0 S] [--t1 S] [--t2 S] [--t3 S]",
+            "  TLS:  [--tls --tls-cert PATH --tls-key PATH --tls-trust PATH]",
             "",
             "See docs/CONTAINER_CONTRACT.md in https://github.com/otfabric/iec104-interop",
             "");
@@ -138,7 +139,7 @@ public final class Main {
         f.addProperty("apciParameters", true);
         f.addProperty("multipleConnections", true);
         f.addProperty("pointQualityOnBitstring", true);
-        f.addProperty("tls", false);
+        f.addProperty("tls", true);
         // The server reports STARTDT and STOPDT as events.
         f.addProperty("dataTransferEvents", true);
         f.addProperty("fileTransfer", true);

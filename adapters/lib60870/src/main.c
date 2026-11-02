@@ -7,9 +7,9 @@
 static const char USAGE[] =
     "usage: iec104-interop <command>\n"
     "\n"
-    "  server [--fixture PATH] [--bind-address ADDR] [--port N] [--ready-file PATH] [APCI]\n"
+    "  server [--fixture PATH] [--bind-address ADDR] [--port N] [--ready-file PATH] [APCI] [TLS]\n"
     "  client <operation> --host HOST [--port N] [--common-address N] [--originator-address N]\n"
-    "         [--timeout-ms N] [--connect-timeout-ms N] [--collect-ms N] [APCI] [operation flags]\n"
+    "         [--timeout-ms N] [--connect-timeout-ms N] [--collect-ms N] [APCI] [TLS] [operation flags]\n"
     "      connect             [--hold-ms N]\n"
     "      interrogate         [--qoi N]\n"
     "      counter-interrogate [--qcc N]\n"
@@ -25,6 +25,7 @@ static const char USAGE[] =
     "  version\n"
     "\n"
     "  APCI: [--k N] [--w N] [--t0 S] [--t1 S] [--t2 S] [--t3 S]\n"
+    "  TLS:  [--tls --tls-cert PATH --tls-key PATH --tls-trust PATH]\n"
     "\n"
     "See docs/CONTAINER_CONTRACT.md in https://github.com/otfabric/iec104-interop\n";
 
@@ -72,7 +73,9 @@ int printCapabilities(void)
     /* The server reports STARTDT and STOPDT as events. */
     cJSON_AddTrueToObject(f, "dataTransferEvents");
     cJSON_AddTrueToObject(f, "pointQualityOnBitstring");
-    cJSON_AddFalseToObject(f, "tls");
+    cJSON_AddTrueToObject(f, "tls");
+    cJSON_AddTrueToObject(f, "tlsServer");
+    cJSON_AddTrueToObject(f, "tlsClient");
     cJSON_AddTrueToObject(f, "fileTransfer");
     cJSON_AddTrueToObject(f, "fileServer");
     cJSON_AddTrueToObject(f, "fileClient");
