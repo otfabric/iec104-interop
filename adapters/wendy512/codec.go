@@ -24,6 +24,8 @@ var typeNames = map[asdu.TypeID]string{
 	asdu.C_SE_NA_1: "C_SE_NA_1", asdu.C_SE_NB_1: "C_SE_NB_1", asdu.C_SE_NC_1: "C_SE_NC_1",
 	asdu.M_EI_NA_1: "M_EI_NA_1", asdu.C_IC_NA_1: "C_IC_NA_1", asdu.C_CI_NA_1: "C_CI_NA_1",
 	asdu.C_RD_NA_1: "C_RD_NA_1", asdu.C_CS_NA_1: "C_CS_NA_1", asdu.C_TS_TA_1: "C_TS_TA_1",
+	asdu.F_FR_NA_1: "F_FR_NA_1", asdu.F_SR_NA_1: "F_SR_NA_1", asdu.F_SC_NA_1: "F_SC_NA_1", asdu.F_LS_NA_1: "F_LS_NA_1",
+	asdu.F_AF_NA_1: "F_AF_NA_1", asdu.F_DR_TA_1: "F_DR_TA_1",
 }
 
 // timeTagged maps a point type to its CP56Time2a variant.
@@ -137,7 +139,7 @@ type object = map[string]any
 func addTime(o object, typ asdu.TypeID, t time.Time) {
 	switch typ {
 	case asdu.M_SP_TB_1, asdu.M_DP_TB_1, asdu.M_ST_TB_1, asdu.M_BO_TB_1, asdu.M_ME_TD_1, asdu.M_ME_TE_1,
-		asdu.M_ME_TF_1, asdu.M_IT_TB_1, asdu.C_CS_NA_1, asdu.C_TS_TA_1:
+		asdu.M_ME_TF_1, asdu.M_IT_TB_1, asdu.C_CS_NA_1, asdu.C_TS_TA_1, asdu.F_DR_TA_1:
 		o["time"] = formatTime(t)
 		if t.IsZero() {
 			o["timeInvalid"] = true
@@ -272,6 +274,25 @@ func objectsJSON(a *asdu.ASDU) (objects []object) {
 		ioa := a.DecodeInfoObjAddr()
 		counter := a.DecodeUint16()
 		add(ioa, a.DecodeCP56Time2a())["counter"] = int(counter)
+	case asdu.F_FR_NA_1, asdu.F_SR_NA_1, asdu.F_SC_NA_1, asdu.F_LS_NA_1, asdu.F_AF_NA_1, asdu.F_DR_TA_1:
+		// go-iecp5 has no getters for these. A directory may be a sequence.
+		ioa := asdu.InfoObjAddr(0)
+		for i := 0; i < int(a.Variable.Number); i++ {
+			if i == 0 || !a.Variable.IsSequence {
+				ioa = a.DecodeInfoObjAddr()
+			} else {
+				ioa++
+			}
+			fields := fileFields(a)
+			var t time.Time
+			if typ == asdu.F_DR_TA_1 {
+				t = a.DecodeCP56Time2a()
+			}
+			o := add(ioa, t)
+			for k, v := range fields {
+				o[k] = v
+			}
+		}
 	}
 	return objects
 }

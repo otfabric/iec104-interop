@@ -45,15 +45,22 @@ type fileSpec struct {
 	SectionSize int `json:"sectionSize"`
 }
 
+type uploadSpec struct {
+	IOA     int `json:"ioa"`
+	Name    int `json:"name"`
+	MaxSize int `json:"maxSize"`
+}
+
 type fixture struct {
 	SchemaVersion string `json:"schemaVersion"`
 	Name          string `json:"name"`
 	Station       struct {
 		CommonAddress int `json:"commonAddress"`
 	} `json:"station"`
-	Points   []*point    `json:"points"`
-	Commands []*command  `json:"commands"`
-	Files    []*fileSpec `json:"files"`
+	Points   []*point      `json:"points"`
+	Commands []*command    `json:"commands"`
+	Files    []*fileSpec   `json:"files"`
+	Uploads  []*uploadSpec `json:"uploads"`
 }
 
 // commandTarget is the point type each command type acts on.
@@ -184,14 +191,26 @@ func loadFixture(path string) (*fixture, error) {
 			return nil, fmt.Errorf("file %d: needs a name (1..255), size (1..65536) and sectionSize (1..size)", f.IOA)
 		}
 	}
+	for _, u := range fx.Uploads {
+		if err := address("upload", u.IOA); err != nil {
+			return nil, err
+		}
+		if u.Name < 1 || u.Name > 255 || u.MaxSize < 1 || u.MaxSize > 65536 {
+			return nil, fmt.Errorf("upload %d: needs a name (1..255) and maxSize (1..65536)", u.IOA)
+		}
+	}
 	return fx, nil
 }
 
 // content is the content of a file: octet i is (i + ioa) mod 251.
 func (f *fileSpec) content() []byte {
-	b := make([]byte, f.Size)
+	return fileContent(f.IOA, f.Size)
+}
+
+func fileContent(ioa, size int) []byte {
+	b := make([]byte, size)
 	for i := range b {
-		b[i] = byte((i + f.IOA) % 251)
+		b[i] = byte((i + ioa) % 251)
 	}
 	return b
 }

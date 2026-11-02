@@ -30,10 +30,12 @@ const (
 
 // station is the controlled station of the contract, driven by a fixture.
 type station struct {
-	mu    sync.Mutex // guards the point values and selections of fx
-	fx    *fixture
-	ca    uint16
-	files map[int]*iec.FileServer // by information object address
+	mu      sync.Mutex // guards the point values and selections and the files of fx, and files
+	fx      *fixture
+	ca      uint16
+	files   map[int]*iec.FileServer // by information object address
+	uploads map[int]*upload         // by information object address
+	dir     *iec.FileServer         // the call of the directory
 }
 
 // conn is one connection: its link and, with --secure, its association.
@@ -85,9 +87,14 @@ func runServer(a *args) (int, error) {
 	}
 	_ = os.Remove(readyFile)
 
-	st := &station{fx: fx, ca: uint16(fx.Station.CommonAddr), files: map[int]*iec.FileServer{}}
+	st := &station{fx: fx, ca: uint16(fx.Station.CommonAddr), files: map[int]*iec.FileServer{},
+		uploads: map[int]*upload{}}
 	for _, f := range fx.Files {
 		st.files[f.IOA] = st.fileServer(f)
+	}
+	st.dir = &iec.FileServer{Store: stationFiles{st}}
+	for _, u := range fx.Uploads {
+		st.uploads[u.IOA] = &upload{spec: u, srv: &iec.FileServer{Store: stationFiles{st}, SegmentSize: 236}}
 	}
 
 	ln, err := net.Listen("tcp", net.JoinHostPort(bind, strconv.Itoa(port)))
@@ -424,6 +431,12 @@ func (s *station) handle(ctx context.Context, c *conn, raw []byte) {
 		s.command(ctx, c, raw, a)
 	case iec.FScNa1, iec.FAfNa1:
 		s.file(ctx, c, raw, a)
+	case iec.FFrNa1, iec.FSrNa1, iec.FSgNa1, iec.FLsNa1:
+		if a.Cause != iec.CauseFile || len(a.Objects) != 1 {
+			reject(iec.CauseUnknownCause)
+			return
+		}
+		s.receive(ctx, c, raw, a)
 	default:
 		reject(iec.CauseUnknownType)
 	}
@@ -536,6 +549,14 @@ func fileEvent(f *fileSpec, success bool) {
 // procedure is the library's.
 func (s *station) file(ctx context.Context, c *conn, raw []byte, a *iec.ASDU) {
 	reject := func(cause iec.Cause) { c.send(ctx, mirror(raw, cause, true, a.CA)) }
+	answer := func(answer *iec.ASDU) {
+		answer.CA = s.ca
+		c.sendASDU(ctx, answer)
+	}
+	if a.Type == iec.FScNa1 && a.Cause == iec.CauseRequest && len(a.Objects) == 1 {
+		s.dir.Handle(ctx, a, answer) // the call of the directory
+		return
+	}
 	if a.Cause != iec.CauseFile {
 		reject(iec.CauseUnknownCause)
 		return
@@ -545,7 +566,10 @@ func (s *station) file(ctx context.Context, c *conn, raw []byte, a *iec.ASDU) {
 		return
 	}
 	o := a.Objects[0]
+	s.mu.Lock()
 	f := s.fx.file(int(o.IOA))
+	srv := s.files[int(o.IOA)]
+	s.mu.Unlock()
 	if f == nil || int(o.File) != f.Name {
 		// A deactivation ends a transfer, and there is none of an unknown
 		// file: it is not answered, like the library's own file server does
@@ -566,10 +590,7 @@ func (s *station) file(ctx context.Context, c *conn, raw []byte, a *iec.ASDU) {
 		a.Type == iec.FScNa1 && o.Qualifier&0x0f == iec.SCQDeactivateFile:
 		fileEvent(f, false)
 	}
-	s.files[f.IOA].Handle(ctx, a, func(answer *iec.ASDU) {
-		answer.CA = s.ca
-		c.sendASDU(ctx, answer)
-	})
+	srv.Handle(ctx, a, answer)
 }
 
 // fileStore serves the content of one file of the fixture.

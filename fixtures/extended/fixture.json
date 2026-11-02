@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1.0",
   "name": "extended",
-  "description": "What the baseline leaves out: interrogation groups and a quality on bitstrings.",
+  "description": "What the baseline leaves out: interrogation groups, a quality on bitstrings, a place to upload a file.",
   "station": {
     "commonAddress": 1
   },
@@ -17,5 +17,12 @@
   ],
   "commands": [
     { "ioa": 500, "type": "C_SC_NA_1", "target": 100 }
+  ],
+  "files": [
+    { "ioa": 30000, "name": 1, "size": 1000, "sectionSize": 1000 },
+    { "ioa": 30001, "name": 2, "size": 5000, "sectionSize": 2048 }
+  ],
+  "uploads": [
+    { "ioa": 31000, "name": 1, "maxSize": 8192 }
   ]
 }

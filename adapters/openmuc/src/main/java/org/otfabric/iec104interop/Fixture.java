@@ -57,11 +57,20 @@ final class Fixture {
         int name;
         int size;
         int sectionSize;
+        /** What an upload stored; null for a file of the fixture. */
+        byte[] stored;
 
-        /** Octet i is (i + ioa) mod 251. */
+        /** Octet i of a file of the fixture is (i + ioa) mod 251. */
         byte[] content() {
-            return Codec.fixtureContent(ioa, size);
+            return stored != null ? stored : Codec.fixtureContent(ioa, size);
         }
+    }
+
+    /** Where a controlling station may send a file: see docs/FIXTURES.md. */
+    static final class Upload {
+        int ioa;
+        int name;
+        int maxSize;
     }
 
     static final Map<ASduType, ASduType> COMMAND_TARGET = Map.of(
@@ -82,6 +91,7 @@ final class Fixture {
     final List<Point> points = new ArrayList<>();
     final List<Command> commands = new ArrayList<>();
     final List<FileSpec> files = new ArrayList<>();
+    final List<Upload> uploads = new ArrayList<>();
 
     Point point(int ioa) {
         for (Point p : points) {
@@ -96,6 +106,15 @@ final class Fixture {
         for (Command c : commands) {
             if (c.ioa == ioa) {
                 return c;
+            }
+        }
+        return null;
+    }
+
+    Upload upload(int ioa) {
+        for (Upload u : uploads) {
+            if (u.ioa == ioa) {
+                return u;
             }
         }
         return null;
@@ -327,6 +346,30 @@ final class Fixture {
                 fx.files.add(f);
             }
             fx.files.sort(Comparator.comparingInt(f -> f.ioa));
+        }
+
+        JsonElement uploads = root.get("uploads");
+        if (uploads != null) {
+            if (!uploads.isJsonArray()) {
+                throw new InvalidException("uploads must be an array");
+            }
+            for (JsonElement item : uploads.getAsJsonArray()) {
+                JsonObject o = item.isJsonObject() ? item.getAsJsonObject() : new JsonObject();
+                if (!inRange(o.get("ioa"), 1, 0xFFFFFF) || !inRange(o.get("name"), 1, 255)
+                        || !inRange(o.get("maxSize"), 1, 65536)) {
+                    throw new InvalidException("upload " + fx.uploads.size()
+                            + ": needs ioa, name (1..255) and maxSize (1..65536)");
+                }
+                Upload u = new Upload();
+                u.ioa = o.get("ioa").getAsInt();
+                u.name = o.get("name").getAsInt();
+                u.maxSize = o.get("maxSize").getAsInt();
+                if (fx.point(u.ioa) != null || fx.command(u.ioa) != null || fx.upload(u.ioa) != null
+                        || fx.files.stream().anyMatch(f -> f.ioa == u.ioa)) {
+                    throw new InvalidException("upload " + u.ioa + ": duplicate information object address");
+                }
+                fx.uploads.add(u);
+            }
         }
         return fx;
     }

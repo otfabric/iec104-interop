@@ -27,6 +27,9 @@ same fixture the same way; this document says what "the same way" is.
   ],
   "files": [
     { "ioa": 30000, "name": 1, "size": 1000, "sectionSize": 1000 }
+  ],
+  "uploads": [
+    { "ioa": 31000, "name": 1, "maxSize": 8192 }
   ]
 }
 ```
@@ -94,6 +97,17 @@ The content is not stored: octet `i` of the file (counting from 0) is
 `(i + ioa) mod 251`. A consumer computes the expected content, or its
 SHA-256, from the fixture alone; 251 is prime, so no section or segment
 boundary lines up with the pattern.
+
+### Uploads
+
+Optional. Where a controlling station may send a file. Only a server with the
+feature `fileUploadServer` takes one; every adapter validates them.
+
+| Field | Meaning |
+|-------|---------|
+| `ioa` | Information object address of the file, 1..16777215, unique among points, commands, files and uploads |
+| `name` | Name of file (NOF), 1..255 |
+| `maxSize` | The longest file taken, in octets, 1..65536 |
 
 ## Station behaviour
 
@@ -199,6 +213,45 @@ with three-octet addresses. A checksum is the sum of the octets modulo 256.
 
 A file is sent on the connection that selected it.
 
+### File upload (F_FR_NA_1, F_SR_NA_1, F_SG_NA_1, F_LS_NA_1, cause 13)
+
+Only with the feature `fileUploadServer`. The procedure is the one of
+[`file-put`](CONTAINER_CONTRACT.md#file-put); every ASDU has cause 13.
+
+| Request | Answer |
+|---------|--------|
+| File ready with the address and name of an entry of `uploads`, and a length of 1..`maxSize` | F_SC_NA_1 with SCQ 2 |
+| Any other file ready | Mirror with cause 47 and P/N = 1 |
+| Section ready of the file being received | F_SC_NA_1 with SCQ 6 and the same NOS |
+| F_SG_NA_1 of the section called | Nothing; the octets are kept |
+| F_LS_NA_1 with LSQ 3 | F_AF_NA_1 with the NOS and AFQ 3, or AFQ 4 when the checksum or the length of the section does not match |
+| F_LS_NA_1 with LSQ 1 | F_AF_NA_1 with AFQ 1, or AFQ 2 when the checksum or the length of the file does not match; the event `file-received` |
+
+The NOS of the F_LS_NA_1 with LSQ 1 is left to the client, and the F_AF_NA_1
+repeats it: go-iec104 sends one more than the number of sections,
+cB-Sigma/iec60870 the number of the last section, as with a download.
+
+A stored file stays for the life of the process, and a second upload to the same
+address replaces it. With the feature `fileServer` it can be fetched like a file
+of `files`, with its name, in sections of a size the station chooses. It is in
+the directory.
+
+### Directory (F_SC_NA_1, cause 5)
+
+Only with the feature `fileDirectoryServer`.
+
+| Request | Answer |
+|---------|--------|
+| SCQ 0 | F_DR_TA_1 with cause 5: an entry for every file of `files` and every stored upload, in ascending address order, the last one with the LFD bit (0x20) in SOF |
+
+An entry has the address of the file, NOF, LOF, SOF (status 0, the LFD bit where
+it applies) and a CP56Time2a time of the station's choosing, which a test must
+not compare. Whether entries with consecutive addresses travel as a sequence
+(SQ = 1) or as separate objects, and how many one ASDU holds, is left to the
+library. Files with consecutive addresses arrive in one ASDU; the agreement check
+of the self-tests does not compare SQ. What a station without any file answers is
+left to the library as well.
+
 ### What a station never does
 
 - Send anything unsolicited: no cyclic or background data, no end of
@@ -245,7 +298,8 @@ Station 1.
 
 Station 1. What the baseline does not have and old images do not know: read it
 from the image with `print-fixture extended`, after checking the features it
-needs. Its station serves the requests of this document like the baseline's.
+needs (`pointQualityOnBitstring`, `groupInterrogation`; `files` and `uploads` are
+ignored by a station that does not serve them). Its station serves the requests of this document like the baseline's.
 
 | IOA | Type | Value | Quality | Groups |
 |----:|------|-------|---------|--------|
@@ -261,6 +315,15 @@ needs. Its station serves the requests of this document like the baseline's.
 | IOA | Command | Target |
 |----:|---------|-------:|
 | 500 | `C_SC_NA_1` | 100 |
+
+| IOA | File name | Size | Section size | Sections | SHA-256 |
+|----:|----------:|-----:|-------------:|---------:|---------|
+| 30000 | 1 | 1000 | 1000 | 1 | `85e6f8dae1836546d45697e6d939234bc7fe5f31862f863af71e52bc223adbde` |
+| 30001 | 2 | 5000 | 2048 | 3 | `149c48d73a2f7159a1ad298d2ca582fa1773635c6ed071a8b25fc46e915f01c8` |
+
+| IOA | Upload name | Largest file |
+|----:|------------:|-------------:|
+| 31000 | 1 | 8192 |
 
 ## Adding a fixture
 

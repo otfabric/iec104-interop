@@ -54,6 +54,8 @@ const usage = `usage: iec104-interop <command>
                           [--qualifier N] [--with-time]
       monitor             [--duration-ms N] [--max-asdus N]
       file-get            --ioa N [--name N]
+      file-put            --ioa N [--name N] --size N [--section-size N]
+      file-dir
   print-capabilities
   print-fixture [NAME]
   version
@@ -125,13 +127,17 @@ func printCapabilities() int {
 			"fileTransfer":            true,
 			"fileServer":              true,
 			"fileClient":              true,
+			"fileUploadServer":        true,
+			"fileUploadClient":        true,
+			"fileDirectoryServer":     true,
+			"fileDirectoryClient":     true,
 			"secureAuthentication":    true,
 		},
 		"pointTypes": []string{"M_SP_NA_1", "M_DP_NA_1", "M_ST_NA_1", "M_BO_NA_1", "M_ME_NA_1", "M_ME_NB_1",
 			"M_ME_NC_1", "M_IT_NA_1"},
 		"commandTypes": []string{"C_SC_NA_1", "C_DC_NA_1", "C_RC_NA_1", "C_SE_NA_1", "C_SE_NB_1", "C_SE_NC_1"},
 		"clientOperations": []string{"connect", "interrogate", "counter-interrogate", "read", "clock-sync",
-			"test-command", "command", "monitor", "file-get"},
+			"test-command", "command", "monitor", "file-get", "file-put", "file-dir"},
 	})
 	return exitOK
 }

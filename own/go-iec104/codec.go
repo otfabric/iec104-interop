@@ -25,7 +25,7 @@ func init() {
 		asdu.C_SC_NA_1, asdu.C_DC_NA_1, asdu.C_RC_NA_1, asdu.C_SE_NA_1, asdu.C_SE_NB_1, asdu.C_SE_NC_1,
 		asdu.C_SC_TA_1, asdu.C_DC_TA_1, asdu.C_RC_TA_1, asdu.C_SE_TA_1, asdu.C_SE_TB_1, asdu.C_SE_TC_1,
 		asdu.M_EI_NA_1, asdu.C_IC_NA_1, asdu.C_CI_NA_1, asdu.C_RD_NA_1, asdu.C_CS_NA_1, asdu.C_TS_TA_1,
-		asdu.F_FR_NA_1, asdu.F_SR_NA_1, asdu.F_SC_NA_1, asdu.F_LS_NA_1, asdu.F_AF_NA_1, asdu.F_SG_NA_1,
+		asdu.F_FR_NA_1, asdu.F_SR_NA_1, asdu.F_SC_NA_1, asdu.F_LS_NA_1, asdu.F_AF_NA_1, asdu.F_SG_NA_1, asdu.F_DR_TA_1,
 	} {
 		modelled[t] = true
 	}
@@ -147,6 +147,9 @@ func objectJSON(t asdu.TypeID, i asdu.InformationObject) object {
 		o["nof"], o["nos"], o["afq"] = int(v.Name), int(v.Section), int(v.Qualifier)
 	case asdu.FileSegment:
 		o["nof"], o["nos"], o["data"] = int(v.Name), int(v.Section), hex.EncodeToString(v.Data)
+	case asdu.FileDirectoryEntry:
+		o["nof"], o["lof"], o["sof"] = int(v.Name), int(v.Length), int(v.Status)
+		stamp(v.Time)
 	}
 	return o
 }

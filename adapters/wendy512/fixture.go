@@ -47,6 +47,12 @@ type fileSpec struct {
 	SectionSize int `json:"sectionSize"`
 }
 
+type uploadSpec struct {
+	IOA     int `json:"ioa"`
+	Name    int `json:"name"`
+	MaxSize int `json:"maxSize"`
+}
+
 type fixture struct {
 	SchemaVersion string `json:"schemaVersion"`
 	Name          string `json:"name"`
@@ -56,6 +62,9 @@ type fixture struct {
 	Points   []*point   `json:"points"`
 	Commands []*command `json:"commands"`
 	Files    []fileSpec `json:"files"`
+	// Validated like everywhere else; this station cannot take a file
+	// (capability fileUploadServer is false) and ignores them.
+	Uploads []uploadSpec `json:"uploads"`
 }
 
 var pointTypes = map[string]asdu.TypeID{
@@ -236,6 +245,15 @@ func loadFixture(path string) (*fixture, error) {
 			return nil, fmt.Errorf("file %d: duplicate information object address", f.IOA)
 		}
 		seen[f.IOA] = true
+	}
+	for i, u := range fx.Uploads {
+		if u.IOA < 1 || u.IOA > 0xFFFFFF || u.Name < 1 || u.Name > 255 || u.MaxSize < 1 || u.MaxSize > 65536 {
+			return nil, fmt.Errorf("upload %d: needs ioa, name (1..255) and maxSize (1..65536)", i)
+		}
+		if seen[u.IOA] {
+			return nil, fmt.Errorf("upload %d: duplicate information object address", u.IOA)
+		}
+		seen[u.IOA] = true
 	}
 	return fx, nil
 }

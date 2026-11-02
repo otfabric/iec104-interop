@@ -10,7 +10,7 @@ and changes only with the major version.
 
 | Version | Change |
 |---------|--------|
-| 1.3 | Interrogation groups and `groups` in fixtures, the feature `groupInterrogation`; a quality on `M_BO_NA_1`, the feature `pointQualityOnBitstring`; the fixture `extended`. The [transport security flags](#transport-security-flags) of IEC 62351-3, `tls` in the `ready` event and in the result document, the error `tls-failed`, the feature `tls` |
+| 1.3 | Interrogation groups and `groups` in fixtures, the feature `groupInterrogation`; a quality on `M_BO_NA_1`, the feature `pointQualityOnBitstring`; the fixture `extended`. The [transport security flags](#transport-security-flags) of IEC 62351-3, `tls` in the `ready` event and in the result document, the error `tls-failed`, the feature `tls`. The operations `file-put` and `file-dir`, the server event `file-received`, `uploads` in fixtures, `directory` in the result document, F_DR_TA_1 in ASDU documents, the features `fileUploadServer`, `fileUploadClient`, `fileDirectoryServer` and `fileDirectoryClient` |
 | 1.2 | The [security flags](#security-flags) of the A-Profile of IEC 62351-5; `secure` in the `ready` event; `secured` in the result document; the error `security-failed`; a mirror with cause 17 counts as a confirmation; the feature `secureAuthentication` |
 | 1.1 | The `file-get` operation, its `file` result and the file transfer ASDU documents; the `file-transfer` server event; `files` in fixtures; the features `fileServer`, `fileClient` and `dataTransferEvents` |
 | 1.0 | First release |
@@ -211,6 +211,7 @@ One JSON object per line on stdout.
 | `clock-sync` | `time` | C_CS_NA_1 received |
 | `command` | `type`, `ioa`, `cot`, `value`, `select`, `outcome` | A process command for the station was received |
 | `file-transfer` | `ioa`, `name`, `success` | A file transfer ended: acknowledged by the controlling station (`success` true) or not. Only with the feature `fileServer` |
+| `file-received` | `ioa`, `name`, `length`, `sha256`, `success` | A file sent by a controlling station arrived, complete (`success` true: every length and checksum matched, and it is stored) or not. `length` and `sha256` (lower-case hex) are of what arrived, which on a failure may be less than was announced. Only with the feature `fileUploadServer` |
 | `stopped` | | Once, after a clean stop |
 
 `command.type` is the type identification on the wire (`C_SC_TA_1` for a
@@ -265,6 +266,8 @@ the operation, close the connection.
 | `command` | see below | A process command | See below |
 | `monitor` | `--duration-ms N` (1000), `--max-asdus N` (0: no limit) | Nothing | The duration passed or the number of ASDUs was received, with the connection still up |
 | `file-get` | `--ioa N` (required), `--name N` (1) | The file transfer procedure in monitor direction: see [below](#file-get) | The whole file arrived, every checksum and length matched and the file was acknowledged. Only with the feature `fileClient` |
+| `file-put` | `--ioa N` (required), `--name N` (1), `--size N` (required), `--section-size N` (`--size`) | The file transfer procedure in control direction: see [below](#file-put) | The station called the file and every section, and acknowledged every section and the file. Only with the feature `fileUploadClient` |
+| `file-dir` | | The call of the directory: see [below](#file-dir) | The entry marked as the last one arrived. Only with the feature `fileDirectoryClient` |
 
 `command` flags:
 
@@ -312,6 +315,38 @@ the negative bit: the error is `negative-confirmation`. The refusal is in
 `asdus`; `confirmations` stays empty, since it is not a mirror with cause 7
 or 9.
 
+### `file-put`
+
+Sends one file with the procedure of IEC 60870-5-101 7.4.11, the station doing
+the calling. Every ASDU has cause 13. `--ioa` is the address of the file and
+`--name` its name of file; `--size` (1..65536) is its length and `--section-size`
+(1..`--size`) the length of every section but the last. NOS is one octet, so more
+than 255 sections are a usage error. The content is defined
+as in a fixture: octet `i`, counting from 0, is `(i + ioa) mod 251`.
+
+| Step | Controlling station | Controlled station |
+|-----:|---------------------|--------------------|
+| 1 | F_FR_NA_1 (file ready) with the length of the file | F_SC_NA_1, SCQ 2 (request file) |
+| 2 | F_SR_NA_1 (section ready), NOS 1, with the length of the section | F_SC_NA_1, SCQ 6 (request section), the same NOS |
+| 3 | F_SG_NA_1 segments, then F_LS_NA_1 with LSQ 3 and the checksum of the section | F_AF_NA_1, AFQ 3 (section acknowledged). Then back to step 2 for the next section |
+| 4 | After the last section, F_LS_NA_1 with LSQ 1 and the checksum of the file | F_AF_NA_1, AFQ 1 (file acknowledged) |
+
+A segment carries at most 236 octets. The NOS of the F_LS_NA_1 of step 4 is the
+client's and the station's F_AF_NA_1 repeats it; [FIXTURES.md](FIXTURES.md) says
+why it is not compared.
+
+A station that refuses the file answers step 1 with the mirrored F_FR_NA_1 and
+cause 47, or with F_AF_NA_1 and a negative AFQ (2 or 4 in the low four bits; the high four
+may name the error) at step 3 or 4: the error is `negative-confirmation`. The refusal is in `asdus`; `confirmations` stays
+empty.
+
+### `file-dir`
+
+Sends F_SC_NA_1 with cause 5 (request), address 0, NOF 0, NOS 0 and SCQ 0, and
+collects the F_DR_TA_1 answers with cause 5 up to the entry with the LFD bit
+(0x20) in its SOF. A mirrored F_SC_NA_1 with cause 44..47 is the error
+`negative-confirmation`.
+
 ### Result document
 
 Exactly one JSON object on one line of stdout, for every invocation that got
@@ -331,7 +366,8 @@ past argument parsing, including failures.
 | `terminated` | boolean | An activation termination of the request was received |
 | `secured` | boolean | With `--secure` only: the association was established |
 | `tls` | boolean | With `--tls` only: STARTDT con arrived over the TLS session |
-| `file` | object | `file-get` only: `ioa`, `name`, `length` (announced by file ready), `received` (octets that arrived), `sections` (sections called) and `sha256` (lower-case hex of what arrived) |
+| `file` | object | `file-get` and `file-put` only: `ioa`, `name`, `length` (announced by file ready), `received` (octets that arrived; for `file-put`, octets sent in sections the station called), `sections` (sections called) and `sha256` (lower-case hex of those octets) |
+| `directory` | array | `file-dir` only: one `{ioa, nof, lof, sof}` per entry received, in order |
 | `asdus` | array | Every ASDU received, in order: see [ASDU documents](#asdu-documents) |
 | `elapsedMs` | number | Wall-clock duration |
 
@@ -410,14 +446,17 @@ tag is set.
 | `F_LS_NA_1` | `nof`, `nos`, `lsq`, `chs` |
 | `F_AF_NA_1` | `nof`, `nos`, `afq` |
 | `F_SG_NA_1` | `nof`, `nos`, `data` (the segment, lower-case hex) |
+| `F_DR_TA_1` | `nof`, `lof`, `sof`, `time` |
 
 `nof` and `nos` are the name of file and of section, `lof` the length of the
-file or section; the qualifiers (`frq`, `srq`, `scq`, `lsq`, `afq`) are the
-raw octets and `chs` is the checksum.
+file or section; the qualifiers (`frq`, `srq`, `scq`, `lsq`, `afq`) and the
+status of file (`sof`) are the raw octets and `chs` is the checksum.
 
 An adapter reports what its library hands it. A library that drops a type on
 reception leaves no trace of it in `asdus`: wendy512 cannot receive the
-CP56Time2a command types or F_SG_NA_1 and declares so in its capabilities.
+CP56Time2a command types or F_SG_NA_1 and declares so in its capabilities: it
+has no `fileTransfer`, `fileClient` or `fileUploadServer`, since each of those
+needs a segment to arrive.
 
 `quality` is an array of flag abbreviations in this order: `OV`, `BL`, `SB`,
 `NT`, `IV`; for integrated totals `CY`, `CA`, `IV`. An empty array means

@@ -51,6 +51,8 @@ type session struct {
 	fileRefused bool
 	fileLength  int
 	fileData    []byte
+	// file-dir
+	directory []object
 }
 
 func (s *session) update(f func()) {
@@ -126,6 +128,11 @@ func (s *session) onASDU(raw []byte, a *iec.ASDU, decodeErr error) {
 			s.fileLength = int(o.Length)
 		case typ == iec.FSgNa1:
 			s.fileData = append(s.fileData, o.Segment...)
+		case typ == iec.FDrTa1:
+			for _, e := range a.Objects {
+				s.directory = append(s.directory, object{"ioa": int(e.IOA), "nof": int(e.File),
+					"lof": int(e.Length), "sof": int(e.Status)})
+			}
 		}
 	})
 }
@@ -281,6 +288,8 @@ func runClient(op string, a *args) (int, error) {
 	var (
 		qoi, qcc           = 20, 5
 		ioa, hold, maxASDU int
+		fileSize, section  int
+		put                *filePut
 		fileName           = 1
 		duration           = 1000
 		clock              = time.Now()
@@ -327,6 +336,23 @@ func runClient(op string, a *args) (int, error) {
 		if err == nil && (ioa < 1 || ioa > 0xffffff || fileName < 1 || fileName > 65535) {
 			err = usagef("file-get: --ioa is required; --name is 1..65535")
 		}
+	case "file-put":
+		for _, f := range []struct {
+			flag string
+			to   *int
+			def  int
+		}{{"--ioa", &ioa, 0}, {"--name", &fileName, 1}, {"--size", &fileSize, 0}, {"--section-size", &section, 0}} {
+			if *f.to, err = a.num(f.flag, f.def); err != nil {
+				return 0, err
+			}
+		}
+		if section == 0 {
+			section = fileSize
+		}
+		if err = validatePut(ioa, fileName, fileSize, section); err == nil {
+			put = newFilePut(ioa, fileName, fileSize, section)
+		}
+	case "file-dir":
 	default:
 		err = usagef("client: unknown operation %s", op)
 	}
@@ -560,6 +586,27 @@ func runClient(op string, a *args) (int, error) {
 				}
 				return failf("failed", "%v", err)
 			}
+		case "file-put":
+			err2 = put.run(ctx, p, timeout)
+			if err2 != nil && !errors.As(err2, new(*failure)) && errors.Is(err2, iec.ErrNoAnswer) {
+				err2 = failf("timeout", "%v", err2)
+			}
+		case "file-dir":
+			_, err := iec.CallDirectory(ctx, p, timeout)
+			if err != nil {
+				s.mu.Lock()
+				refused, cot := s.fileRefused, s.negativeCot
+				s.mu.Unlock()
+				switch {
+				case refused:
+					return failf("negative-confirmation", "the station refused the call of the directory (cause %d)", cot)
+				case s.isClosed():
+					return failf("connection-lost", "connection closed during the call of the directory")
+				case errors.Is(err, iec.ErrNoAnswer):
+					return failf("timeout", "%v", err)
+				}
+				return failf("failed", "%v", err)
+			}
 		default: // monitor
 			s.waitFor(func() bool { return maxASDU > 0 && len(s.asdus) >= maxASDU }, time.Duration(duration)*time.Millisecond)
 			if s.isClosed() {
@@ -618,6 +665,12 @@ func runClient(op string, a *args) (int, error) {
 		sum := sha256.Sum256(s.fileData)
 		r["file"] = object{"ioa": ioa, "name": fileName, "length": s.fileLength, "received": len(s.fileData),
 			"sections": p.sections, "sha256": hex.EncodeToString(sum[:])}
+	}
+	if op == "file-put" {
+		r["file"] = put.result()
+	}
+	if op == "file-dir" {
+		r["directory"] = append([]object{}, s.directory...)
 	}
 	r["asdus"] = append([]object{}, s.asdus...)
 	s.mu.Unlock()

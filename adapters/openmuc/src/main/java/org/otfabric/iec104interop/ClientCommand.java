@@ -18,8 +18,16 @@ import org.openmuc.j60870.CauseOfTransmission;
 import org.openmuc.j60870.ClientConnectionBuilder;
 import org.openmuc.j60870.Connection;
 import org.openmuc.j60870.ConnectionEventListener;
+import org.openmuc.j60870.ie.IeAckFileOrSectionQualifier;
+import org.openmuc.j60870.ie.IeChecksum;
 import org.openmuc.j60870.ie.IeDoubleCommand;
 import org.openmuc.j60870.ie.IeDoubleCommand.DoubleCommandState;
+import org.openmuc.j60870.ie.IeFileReadyQualifier;
+import org.openmuc.j60870.ie.IeFileSegment;
+import org.openmuc.j60870.ie.IeLastSectionOrSegmentQualifier;
+import org.openmuc.j60870.ie.IeLengthOfFileOrSection;
+import org.openmuc.j60870.ie.IeNameOfFile;
+import org.openmuc.j60870.ie.IeNameOfSection;
 import org.openmuc.j60870.ie.IeNormalizedValue;
 import org.openmuc.j60870.ie.IeQualifierOfCounterInterrogation;
 import org.openmuc.j60870.ie.IeQualifierOfInterrogation;
@@ -27,10 +35,14 @@ import org.openmuc.j60870.ie.IeQualifierOfSetPointCommand;
 import org.openmuc.j60870.ie.IeRegulatingStepCommand;
 import org.openmuc.j60870.ie.IeRegulatingStepCommand.StepCommandState;
 import org.openmuc.j60870.ie.IeScaledValue;
+import org.openmuc.j60870.ie.IeSectionReadyQualifier;
+import org.openmuc.j60870.ie.IeSelectAndCallQualifier;
 import org.openmuc.j60870.ie.IeShortFloat;
 import org.openmuc.j60870.ie.IeSingleCommand;
+import org.openmuc.j60870.ie.IeStatusOfFile;
 import org.openmuc.j60870.ie.IeTestSequenceCounter;
 import org.openmuc.j60870.ie.IeTime56;
+import org.openmuc.j60870.ie.InformationElement;
 import org.openmuc.j60870.ie.InformationObject;
 
 import com.google.gson.JsonArray;
@@ -69,7 +81,7 @@ final class ClientCommand implements ConnectionEventListener {
         asdus.add(Codec.asduJson(asdu));
         asduCount++;
         ASduType type = asdu.getTypeIdentification();
-        if (type != null && type.getId() >= 120 && type.getId() <= 125) {
+        if (type != null && type.getId() >= 120 && type.getId() <= 126) {
             fileEvents.add(asdu);
         }
         int cot = asdu.getCauseOfTransmission().getId();
@@ -268,6 +280,102 @@ final class ClientCommand implements ConnectionEventListener {
         }
     }
 
+    /** The reply to a step of an upload or to the call of the directory; a refusal ends the operation. */
+    private ASdu fileReply(int timeoutMs, String what) throws Failure {
+        ASdu a = nextFileEvent(timeoutMs, what);
+        int cot = a.getCauseOfTransmission().getId();
+        if (a.isNegativeConfirm() || (cot >= 44 && cot <= 47)) {
+            throw new Failure("negative-confirmation", "the station refused (" + a.getTypeIdentification() + ", cause "
+                    + cot + ")");
+        }
+        return a;
+    }
+
+    private void awaitCall(int scq, int nos, int timeoutMs) throws Failure {
+        String what = "F_SC_NA_1 with SCQ " + scq;
+        ASdu a = fileReply(timeoutMs, what);
+        if (a.getTypeIdentification() != ASduType.F_SC_NA_1) {
+            throw new Failure("failed", "expected " + what + ", got " + a.getTypeIdentification());
+        }
+        InformationElement[] e = a.getInformationObjects()[0].getInformationElements()[0];
+        if (((IeSelectAndCallQualifier) e[2]).getRequest() != scq || ((IeNameOfSection) e[1]).getValue() != nos) {
+            throw new Failure("failed", "expected " + what + " and NOS " + nos);
+        }
+    }
+
+    private void awaitAck(int afq, int timeoutMs) throws Failure {
+        String what = "F_AF_NA_1 with AFQ " + afq;
+        ASdu a = fileReply(timeoutMs, what);
+        if (a.getTypeIdentification() != ASduType.F_AF_NA_1) {
+            throw new Failure("failed", "expected " + what + ", got " + a.getTypeIdentification());
+        }
+        InformationElement[] e = a.getInformationObjects()[0].getInformationElements()[0];
+        int got = ((IeAckFileOrSectionQualifier) e[2]).getRequest();
+        if (got == 2 || got == 4) {
+            throw new Failure("negative-confirmation", "the station did not acknowledge (AFQ " + got + ")");
+        }
+        if (got != afq) {
+            throw new Failure("failed", "expected " + what + ", got AFQ " + got);
+        }
+    }
+
+    /** Announce one file and send it as the station calls it. See docs/CONTAINER_CONTRACT.md. */
+    private void upload(Connection c, int ca, int ioa, int nof, int size, int sectionSize, int timeoutMs, Download d)
+            throws Failure, IOException {
+        byte[] content = Codec.fixtureContent(ioa, size);
+        IeNameOfFile name = new IeNameOfFile(nof);
+        d.length = size;
+        c.fileReady(ca, ioa, name, new IeLengthOfFileOrSection(size), new IeFileReadyQualifier(0, false));
+        awaitCall(2, 0, timeoutMs);
+        int section = 0;
+        for (int from = 0; from < size; from += sectionSize) {
+            int to = Math.min(from + sectionSize, size);
+            section++;
+            IeNameOfSection nos = new IeNameOfSection(section);
+            c.sectionReady(ca, ioa, name, nos, new IeLengthOfFileOrSection(to - from),
+                    new IeSectionReadyQualifier(0, false));
+            awaitCall(6, section, timeoutMs);
+            d.sections++;
+            d.data.write(content, from, to - from);
+            for (int off = from; off < to; off += FileStation.MAX_SEGMENT) {
+                c.sendSegment(ca, ioa, name, nos,
+                        new IeFileSegment(content, off, Math.min(FileStation.MAX_SEGMENT, to - off)));
+            }
+            c.lastSectionOrSegment(ca, ioa, name, nos, new IeLastSectionOrSegmentQualifier(3),
+                    new IeChecksum(Codec.checksum(content, from, to)));
+            awaitAck(3, timeoutMs);
+        }
+        c.lastSectionOrSegment(ca, ioa, name, new IeNameOfSection(section), new IeLastSectionOrSegmentQualifier(1),
+                new IeChecksum(Codec.checksum(content, 0, size)));
+        awaitAck(1, timeoutMs);
+    }
+
+    /** Calls the directory and collects it up to the entry with the LFD bit. */
+    private void directory(Connection c, int ca, int timeoutMs, JsonArray out) throws Failure, IOException {
+        c.callOrSelectFiles(ca, CauseOfTransmission.REQUEST, 0, new IeNameOfFile(0), new IeNameOfSection(0),
+                new IeSelectAndCallQualifier(0, 0));
+        boolean last = false;
+        while (!last) {
+            ASdu a = fileReply(timeoutMs, "the entry of the directory with the LFD bit");
+            if (a.getTypeIdentification() != ASduType.F_DR_TA_1) {
+                throw new Failure("failed", "expected F_DR_TA_1, got " + a.getTypeIdentification());
+            }
+            for (InformationObject io : a.getInformationObjects()) {
+                InformationElement[][] rows = io.getInformationElements();
+                for (int i = 0; i < rows.length; i++) {
+                    int sof = Codec.statusOctet((IeStatusOfFile) rows[i][2]);
+                    JsonObject entry = new JsonObject();
+                    entry.addProperty("ioa", io.getInformationObjectAddress() + i);
+                    entry.addProperty("nof", ((IeNameOfFile) rows[i][0]).getValue());
+                    entry.addProperty("lof", ((IeLengthOfFileOrSection) rows[i][1]).getValue());
+                    entry.addProperty("sof", sof);
+                    out.add(entry);
+                    last |= (sof & Codec.LAST_FILE_OF_DIRECTORY) != 0;
+                }
+            }
+        }
+    }
+
     private static boolean parseBool(String s) {
         switch (s.toLowerCase()) {
         case "true":
@@ -417,7 +525,10 @@ final class ClientCommand implements ConnectionEventListener {
         boolean withTime = false;
         ProcessCommand command = null;
         int fileName = 1;
+        int fileSize = 0;
+        int sectionSize = 0;
         Download download = new Download();
+        JsonArray directory = new JsonArray();
         switch (op) {
         case "connect":
             holdMs = args.integer("--hold-ms", 0);
@@ -461,6 +572,19 @@ final class ClientCommand implements ConnectionEventListener {
             if (ioa < 1 || fileName < 1 || fileName > 65535) {
                 throw new Args.UsageException("file-get: --ioa is required; --name is 1..65535");
             }
+            break;
+        case "file-put":
+            ioa = args.integer("--ioa", 0);
+            fileName = args.integer("--name", 1);
+            fileSize = args.integer("--size", 0);
+            sectionSize = args.integer("--section-size", fileSize);
+            if (ioa < 1 || fileName < 1 || fileName > 65535 || fileSize < 1 || fileSize > 65536 || sectionSize < 1
+                    || sectionSize > fileSize || (fileSize + sectionSize - 1) / sectionSize > 255) {
+                throw new Args.UsageException("file-put: --ioa and --size (1..65536) are required; --name is 1..65535;"
+                        + " --section-size is 1..--size, in at most 255 sections");
+            }
+            break;
+        case "file-dir":
             break;
         case "monitor":
             durationMs = args.integer("--duration-ms", 1000);
@@ -588,6 +712,12 @@ final class ClientCommand implements ConnectionEventListener {
             case "file-get":
                 state.download(c, ca, fIoa, fileName, timeoutMs, download);
                 break;
+            case "file-put":
+                state.upload(c, ca, fIoa, fileName, fileSize, sectionSize, timeoutMs, download);
+                break;
+            case "file-dir":
+                state.directory(c, ca, timeoutMs, directory);
+                break;
             default: // monitor
                 state.waitFor(() -> fMax > 0 && state.asduCount >= fMax, durationMs);
                 if (state.isClosed()) {
@@ -630,7 +760,10 @@ final class ClientCommand implements ConnectionEventListener {
         if (op.equals("connect")) {
             r.addProperty("stopdtConfirmed", stopdt);
         }
-        if (op.equals("file-get")) {
+        if (op.equals("file-dir")) {
+            r.add("directory", directory);
+        }
+        if (op.equals("file-get") || op.equals("file-put")) {
             byte[] data = download.data.toByteArray();
             JsonObject f = new JsonObject();
             f.addProperty("ioa", ioa);
@@ -638,15 +771,7 @@ final class ClientCommand implements ConnectionEventListener {
             f.addProperty("length", download.length);
             f.addProperty("received", data.length);
             f.addProperty("sections", download.sections);
-            StringBuilder hex = new StringBuilder();
-            try {
-                for (byte b : java.security.MessageDigest.getInstance("SHA-256").digest(data)) {
-                    hex.append(String.format("%02x", b));
-                }
-            } catch (java.security.NoSuchAlgorithmException e) {
-                throw new IllegalStateException(e);
-            }
-            f.addProperty("sha256", hex.toString());
+            f.addProperty("sha256", Codec.sha256Hex(data));
             r.add("file", f);
         }
         synchronized (state) {

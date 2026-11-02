@@ -281,11 +281,29 @@ final class ServerCommand {
             command(c, asdu, wire, type);
             return;
         case F_SC_NA_1:
+            if (cot == CauseOfTransmission.REQUEST) {
+                fileStation.directory(c, asdu);
+            } else if (cot == CauseOfTransmission.FILE_TRANSFER) {
+                files.call(c, asdu);
+            } else {
+                reject(c, asdu, UNKNOWN_COT);
+            }
+            return;
+        case F_FR_NA_1:
+        case F_SR_NA_1:
+        case F_SG_NA_1:
+        case F_LS_NA_1:
             if (cot != CauseOfTransmission.FILE_TRANSFER) {
                 reject(c, asdu, UNKNOWN_COT);
-                return;
+            } else if (type == ASduType.F_FR_NA_1) {
+                files.fileReady(c, asdu);
+            } else if (type == ASduType.F_SR_NA_1) {
+                files.sectionReady(c, asdu);
+            } else if (type == ASduType.F_SG_NA_1) {
+                files.segment(c, asdu);
+            } else {
+                files.last(c, asdu);
             }
-            files.call(c, asdu);
             return;
         case F_AF_NA_1:
             if (cot != CauseOfTransmission.FILE_TRANSFER) {

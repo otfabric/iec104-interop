@@ -322,6 +322,40 @@ bool Fixture_load(const char* path, Fixture* fx, char* err, size_t errSize)
             fx->fileCount++;
         }
     }
+    const cJSON* uploads = cJSON_GetObjectItemCaseSensitive(root, "uploads");
+    if (uploads != NULL) {
+        if (!cJSON_IsArray(uploads)) {
+            fail(err, errSize, "uploads must be an array%.0d%s", 0, "");
+            goto done;
+        }
+        fx->uploads = calloc((size_t)cJSON_GetArraySize(uploads) + 1, sizeof(UploadSpec));
+        cJSON_ArrayForEach(item, uploads)
+        {
+            UploadSpec* u = &fx->uploads[fx->uploadCount];
+            const cJSON* ioa = cJSON_GetObjectItemCaseSensitive(item, "ioa");
+            const cJSON* nof = cJSON_GetObjectItemCaseSensitive(item, "name");
+            const cJSON* maxSize = cJSON_GetObjectItemCaseSensitive(item, "maxSize");
+            if (!isInteger(ioa) || ioa->valueint < 1 || ioa->valueint > 0xFFFFFF || !isInteger(nof) ||
+                nof->valueint < 1 || nof->valueint > 255 || !isInteger(maxSize) || maxSize->valueint < 1 ||
+                maxSize->valueint > 65536) {
+                fail(err, errSize, "upload %d: needs ioa, name (1..255) and maxSize (1..65536)%s", fx->uploadCount, "");
+                goto done;
+            }
+            u->ioa = ioa->valueint;
+            u->name = nof->valueint;
+            u->maxSize = maxSize->valueint;
+            bool dup = Fixture_findPoint(fx, u->ioa) != NULL || Fixture_findCommand(fx, u->ioa) != NULL;
+            for (int i = 0; i < fx->fileCount; i++)
+                dup = dup || fx->files[i].ioa == u->ioa;
+            for (int i = 0; i < fx->uploadCount; i++)
+                dup = dup || fx->uploads[i].ioa == u->ioa;
+            if (dup) {
+                fail(err, errSize, "upload %d: duplicate information object address%s", u->ioa, "");
+                goto done;
+            }
+            fx->uploadCount++;
+        }
+    }
     ok = true;
 
 done:

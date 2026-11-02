@@ -51,6 +51,8 @@ const usage = `usage: iec104-interop <command>
       command             --type T --ioa N --value V [--mode direct|select|sbo|cancel]
                           [--qualifier N] [--with-time]
       monitor             [--duration-ms N] [--max-asdus N]
+      file-put            --ioa N [--name N] --size N [--section-size N]
+      file-dir
   print-capabilities
   print-fixture [NAME]
   version
@@ -126,6 +128,13 @@ func printCapabilities() int {
 			"fileTransfer": false,
 			"fileServer":   true,
 			"fileClient":   false,
+			// A station that takes a file has to receive segments too. A client
+			// that sends one only receives F_SC_NA_1 and F_AF_NA_1, and a
+			// directory travels in types go-iecp5 has a size for.
+			"fileUploadServer":    false,
+			"fileUploadClient":    true,
+			"fileDirectoryServer": true,
+			"fileDirectoryClient": true,
 			// No IEC 62351-5.
 			"secureAuthentication": false,
 		},
@@ -133,7 +142,7 @@ func printCapabilities() int {
 			"M_ME_NC_1", "M_IT_NA_1"},
 		"commandTypes": []string{"C_SC_NA_1", "C_DC_NA_1", "C_RC_NA_1", "C_SE_NA_1", "C_SE_NB_1", "C_SE_NC_1"},
 		"clientOperations": []string{"connect", "interrogate", "counter-interrogate", "read", "clock-sync",
-			"test-command", "command", "monitor"},
+			"test-command", "command", "monitor", "file-put", "file-dir"},
 	})
 	return exitOK
 }

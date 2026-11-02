@@ -351,6 +351,50 @@ while IFS=$'\t' read -r case_id state want_exit want_summary needs server_flags 
     done
 done < "${FEATURE_CASES}"
 
+# ---- values: an uploaded file arrives as it was sent, and is kept ----
+# The station's own event says what arrived; the client's report is not evidence
+# of that. Then whoever can fetches it back and finds it in the directory.
+for server in "${ADAPTERS[@]}"; do
+    has "${server}" fileUploadServer || continue
+    for client in "${ADAPTERS[@]}"; do
+        pair="${client}->${server}"
+        at values.upload-event "${client}" "${server}"
+        supported "${client}" "${server}" "server:fileUploadServer,client:fileUploadClient" || { skip "${pair}: upload"; continue; }
+        name=$(feature_server rw "${server}" "$(feature_flags @ext)") || { fail "${pair}: the server did not start"; continue; }
+        want_hash=$(python3 -c 'import hashlib; print(hashlib.sha256(bytes((i+31000)%251 for i in range(5000))).hexdigest())')
+        run_client "${client}" file-put --ioa 31000 --size 5000 --section-size 2048 --host "${name}" >/dev/null
+        got=$(docker logs "${name}" 2>/dev/null | jq -c 'select(.event == "file-received") | [.ioa, .name, .length, .success, .sha256]' | tail -1)
+        if [[ "${got}" == "[31000,1,5000,true,\"${want_hash}\"]" ]]; then ok "${pair}: the station received what the fixture rule says"
+        else fail "${pair}: file-received event is ${got:-absent}, want 5000 octets with sha256 ${want_hash}"; fi
+        at values.upload-read-back "${client}" "${server}"
+        reader="${client}"
+        has "${reader}" fileClient || reader="${server}"
+        if has "${server}" fileServer && has "${reader}" fileClient; then
+            got=$(run_client "${reader}" file-get --ioa 31000 --name 1 --host "${name}" | jq -c '[.file.length, .file.received, .file.sha256]')
+            if [[ "${got}" == "[5000,5000,\"${want_hash}\"]" ]]; then ok "${pair}: the stored file can be fetched"
+            else fail "${pair}: the stored file reads back as ${got}, want sha256 ${want_hash}"; fi
+        else
+            skip "${pair}: read back"
+        fi
+        at values.upload-directory "${client}" "${server}"
+        reader="${client}"
+        has "${reader}" fileDirectoryClient || reader="${server}"
+        if has "${server}" fileDirectoryServer && has "${reader}" fileDirectoryClient; then
+            got=$(run_client "${reader}" file-dir --host "${name}" | jq -c '[.directory[] | [.ioa, .nof, .lof, .sof]]')
+            if [[ "${got}" == '[[30000,1,1000,0],[30001,2,5000,0],[31000,1,5000,32]]' ]]; then ok "${pair}: the stored file is in the directory"
+            else fail "${pair}: directory after an upload is ${got}"; fi
+        else
+            skip "${pair}: directory after an upload"
+        fi
+        # An upload that was refused leaves nothing behind.
+        at values.upload-refused-no-event "${client}" "${server}"
+        run_client "${client}" file-put --ioa 39999 --size 1000 --host "${name}" >/dev/null
+        got=$(docker logs "${name}" 2>/dev/null | jq -c 'select(.event == "file-received" and .ioa == 39999)')
+        if [[ -z "${got}" ]]; then ok "${pair}: a refused upload is not received"; else fail "${pair}: refused upload was received: ${got}"; fi
+        stop_server "${name}"
+    done
+done
+
 # ---- tls: a client without TLS gets nothing from a station with it ----
 for server in "${ADAPTERS[@]}"; do
     has "${server}" tlsServer || continue

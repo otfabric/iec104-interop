@@ -20,6 +20,8 @@ static const char USAGE[] =
     "                          [--qualifier N] [--with-time]\n"
     "      monitor             [--duration-ms N] [--max-asdus N]\n"
     "      file-get            --ioa N [--name N]\n"
+    "      file-put            --ioa N --size N [--name N] [--section-size N]\n"
+    "      file-dir\n"
     "  print-capabilities\n"
     "  print-fixture [NAME]\n"
     "  version\n"
@@ -36,7 +38,7 @@ int printCapabilities(void)
     static const char* commandTypes[] = { "C_SC_NA_1", "C_DC_NA_1", "C_RC_NA_1", "C_SE_NA_1", "C_SE_NB_1",
         "C_SE_NC_1" };
     static const char* operations[] = { "connect", "interrogate", "counter-interrogate", "read", "clock-sync",
-        "test-command", "command", "monitor", "file-get" };
+        "test-command", "command", "monitor", "file-get", "file-put", "file-dir" };
 
     cJSON* c = cJSON_CreateObject();
     cJSON_AddStringToObject(c, "schemaVersion", SCHEMA_VERSION);
@@ -79,11 +81,15 @@ int printCapabilities(void)
     cJSON_AddTrueToObject(f, "fileTransfer");
     cJSON_AddTrueToObject(f, "fileServer");
     cJSON_AddTrueToObject(f, "fileClient");
+    cJSON_AddTrueToObject(f, "fileUploadServer");
+    cJSON_AddTrueToObject(f, "fileUploadClient");
+    cJSON_AddTrueToObject(f, "fileDirectoryServer");
+    cJSON_AddTrueToObject(f, "fileDirectoryClient");
     cJSON_AddFalseToObject(f, "secureAuthentication");
 
     cJSON_AddItemToObject(c, "pointTypes", cJSON_CreateStringArray(pointTypes, 8));
     cJSON_AddItemToObject(c, "commandTypes", cJSON_CreateStringArray(commandTypes, 6));
-    cJSON_AddItemToObject(c, "clientOperations", cJSON_CreateStringArray(operations, 9));
+    cJSON_AddItemToObject(c, "clientOperations", cJSON_CreateStringArray(operations, (int)(sizeof(operations) / sizeof(operations[0]))));
     emitJson(c);
     return EXIT_OK;
 }

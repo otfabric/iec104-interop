@@ -20,6 +20,9 @@ import (
 	"github.com/otfabric/go-iec104/sec"
 )
 
+// maxFileSections is how many sections Client.PutFile sends.
+const maxFileSections = 254
+
 // The counter of the test command, the same in every adapter, since the self-tests
 // compare the result documents of all pairings.
 const testCounter = 0x4938
@@ -27,7 +30,8 @@ const testCounter = 0x4938
 // The controlling station of the contract: one bounded operation per invocation.
 // It sends with Client.Send and judges what comes back itself, since the contract
 // wants to see more than the request methods say (every ASDU, and a confirmation
-// as it arrives). The file transfer is the library's procedure, Client.GetFile.
+// as it arrives). The file transfer is the library's procedure, Client.GetFile,
+// Client.PutFile and Client.ListFiles.
 
 // failure is a failed operation: it becomes the error object of the result.
 type failure struct{ code, message string }
@@ -55,6 +59,10 @@ type session struct {
 	fileLength   int
 	fileSections int
 	fileData     []byte
+	// file-put: the sections of the file, which the station calls
+	putSections [][]byte
+	// file-dir
+	directory []object
 }
 
 func (s *session) update(f func()) {
@@ -123,7 +131,17 @@ func (s *session) HandleASDU(a *asdu.ASDU) {
 		if a.Negative || refusal(a.Cause) {
 			return
 		}
+		for _, o := range a.Objects {
+			if e, ok := o.(asdu.FileDirectoryEntry); ok {
+				s.directory = append(s.directory, object{"ioa": int(e.IOA), "nof": int(e.Name), "lof": int(e.Length), "sof": int(e.Status)})
+			}
+		}
 		switch o := a.First().(type) {
+		case asdu.FileCall:
+			if n := int(o.Section); o.Qualifier&0x0f == asdu.SectionRequest && n >= 1 && n <= len(s.putSections) {
+				s.fileSections++
+				s.fileData = append(s.fileData, s.putSections[n-1]...)
+			}
 		case asdu.FileReady:
 			if o.Qualifier&asdu.FileNegative == 0 {
 				s.fileLength = int(o.Length)
@@ -236,7 +254,7 @@ func (p *peer) stopDT() error {
 	return nil
 }
 
-// fileError says what a failed Client.GetFile means.
+// fileError says what a failed file transfer or call of the directory means.
 func (p *peer) fileError(err error) error {
 	var negative *iec104.NegativeError
 	switch {
@@ -412,6 +430,33 @@ func parseOperation(op string, f *flags) (func(*peer) error, *int, *int) {
 			}
 			return nil
 		}, &ioa, &name
+	case "file-put":
+		ioa := f.required("ioa", 1, 0xFFFFFF)
+		name := f.integer("name", 1, 1, 65535)
+		size := f.required("size", 1, 65536)
+		sectionSize := f.integer("section-size", size, 1, max(size, 1))
+		var sections [][]byte
+		for rest := fileContent(ioa, size); len(rest) > 0; rest = rest[min(sectionSize, len(rest)):] {
+			sections = append(sections, rest[:min(sectionSize, len(rest))])
+		}
+		if len(sections) > maxFileSections {
+			// The name of a section is one octet; the library goes up to this.
+			f.fail("--size %d in sections of %d is more than %d sections", size, sectionSize, maxFileSections)
+		}
+		return func(p *peer) error {
+			p.update(func() { p.fileLength, p.putSections = size, sections })
+			if err := p.client.PutFile(context.Background(), p.ca, asdu.IOA(ioa), uint16(name), sections...); err != nil {
+				return p.fileError(err)
+			}
+			return nil
+		}, &ioa, &name
+	case "file-dir":
+		return func(p *peer) error {
+			if _, err := p.client.ListFiles(context.Background(), p.ca, 0); err != nil {
+				return p.fileError(err)
+			}
+			return nil
+		}, nil, nil
 	}
 	f.fail("unknown operation %s", op)
 	return nil, nil, nil
@@ -581,10 +626,13 @@ func runClient(op string, f *flags) int {
 		r["tls"] = started
 	}
 	r["confirmations"], r["terminated"] = append([]object{}, s.confirmations...), s.terminated
-	if op == "file-get" {
+	if op == "file-get" || op == "file-put" {
 		sum := sha256.Sum256(s.fileData)
 		r["file"] = object{"ioa": *fileIOA, "name": *fileName, "length": s.fileLength, "received": len(s.fileData),
 			"sections": s.fileSections, "sha256": hex.EncodeToString(sum[:])}
+	}
+	if op == "file-dir" {
+		r["directory"] = append([]object{}, s.directory...)
 	}
 	r["asdus"] = append([]object{}, s.asdus...)
 	r["elapsedMs"] = time.Since(begin).Milliseconds()

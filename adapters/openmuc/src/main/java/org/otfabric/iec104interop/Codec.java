@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package org.otfabric.iec104interop;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -36,6 +38,7 @@ import org.openmuc.j60870.ie.IeSelectAndCallQualifier;
 import org.openmuc.j60870.ie.IeShortFloat;
 import org.openmuc.j60870.ie.IeSingleCommand;
 import org.openmuc.j60870.ie.IeSinglePointWithQuality;
+import org.openmuc.j60870.ie.IeStatusOfFile;
 import org.openmuc.j60870.ie.IeTestSequenceCounter;
 import org.openmuc.j60870.ie.IeTime56;
 import org.openmuc.j60870.ie.IeValueWithTransientState;
@@ -61,7 +64,11 @@ final class Codec {
             ASduType.C_SE_NB_1, ASduType.C_SE_NC_1, ASduType.C_SC_TA_1, ASduType.C_DC_TA_1, ASduType.C_RC_TA_1,
             ASduType.C_SE_TA_1, ASduType.C_SE_TB_1, ASduType.C_SE_TC_1, ASduType.M_EI_NA_1, ASduType.C_IC_NA_1,
             ASduType.C_CI_NA_1, ASduType.C_RD_NA_1, ASduType.C_CS_NA_1, ASduType.C_TS_TA_1, ASduType.F_FR_NA_1,
-            ASduType.F_SR_NA_1, ASduType.F_SC_NA_1, ASduType.F_LS_NA_1, ASduType.F_AF_NA_1, ASduType.F_SG_NA_1);
+            ASduType.F_SR_NA_1, ASduType.F_SC_NA_1, ASduType.F_LS_NA_1, ASduType.F_AF_NA_1, ASduType.F_SG_NA_1,
+            ASduType.F_DR_TA_1);
+
+    /** The LFD bit of a status of file. */
+    static final int LAST_FILE_OF_DIRECTORY = 0x20;
 
     private Codec() {
     }
@@ -82,6 +89,34 @@ final class Codec {
             b[i] = (byte) ((i + ioa) % 251);
         }
         return b;
+    }
+
+    /** Lower-case hex of the SHA-256. */
+    static String sha256Hex(byte[] data) {
+        StringBuilder hex = new StringBuilder();
+        try {
+            for (byte b : MessageDigest.getInstance("SHA-256").digest(data)) {
+                hex.append(String.format("%02x", b));
+            }
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+        return hex.toString();
+    }
+
+    /** The raw octet of a status of file, which j60870 splits into a number and flags. */
+    static int statusOctet(IeStatusOfFile sof) {
+        int octet = sof.getStatus();
+        if (sof.getFlags().contains(IeStatusOfFile.Flag.LAST_FILE_OF_DIRECTORY)) {
+            octet |= LAST_FILE_OF_DIRECTORY;
+        }
+        if (sof.getFlags().contains(IeStatusOfFile.Flag.NAME_DEFINES_DIRECTORY)) {
+            octet |= 0x40;
+        }
+        if (sof.getFlags().contains(IeStatusOfFile.Flag.TRANSFER_IS_ACTIVE)) {
+            octet |= 0x80;
+        }
+        return octet;
     }
 
     static String formatTime(long ms) {
@@ -433,6 +468,12 @@ final class Codec {
             o.addProperty("data", hex.toString());
             break;
         }
+        case F_DR_TA_1:
+            o.addProperty("nof", ((IeNameOfFile) e[0]).getValue());
+            o.addProperty("lof", ((IeLengthOfFileOrSection) e[1]).getValue());
+            o.addProperty("sof", statusOctet((IeStatusOfFile) e[2]));
+            addTime(o, e[3]);
+            break;
         case M_EI_NA_1:
             o.addProperty("coi", ((IeCauseOfInitialization) e[0]).getValue());
             break;

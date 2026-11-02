@@ -65,7 +65,17 @@ typedef struct {
     int name;        /* NOF */
     int size;        /* octets */
     int sectionSize; /* octets per section; the last one may be shorter */
+    /* Server: an entry of the catalog of files. */
+    int maxSize;         /* > 0: a place to upload to, this many octets at most */
+    bool stored;         /* an upload arrived; only then it can be fetched */
+    const uint8_t* data; /* the upload; NULL: the content rule of docs/FIXTURES.md */
 } FileSpec;
+
+typedef struct {
+    int ioa;
+    int name;    /* NOF */
+    int maxSize; /* octets */
+} UploadSpec;
 
 typedef struct {
     char name[64];
@@ -76,6 +86,8 @@ typedef struct {
     int commandCount;
     FileSpec* files;
     int fileCount;
+    UploadSpec* uploads;
+    int uploadCount;
 } Fixture;
 
 /* Octet i of the file at ioa: the content rule of docs/FIXTURES.md. */

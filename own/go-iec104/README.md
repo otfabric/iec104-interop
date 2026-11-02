@@ -71,7 +71,7 @@ make -f own/go-iec104/Makefile image smoke interop    # from the repository root
 
 Declared `false`:
 
-The contract also has no way to reach these parts of go-iec104, so they are not
-exposed: file upload and directory transfer, redundancy groups.
+The contract also has no way to reach this part of go-iec104, so it is not
+exposed: redundancy groups.
 
 Everything else in the contract is implemented and declared `true`.

@@ -49,7 +49,7 @@ static const struct {
     { M_EI_NA_1, "M_EI_NA_1" }, { C_IC_NA_1, "C_IC_NA_1" }, { C_CI_NA_1, "C_CI_NA_1" }, { C_RD_NA_1, "C_RD_NA_1" },
     { C_CS_NA_1, "C_CS_NA_1" }, { C_TS_TA_1, "C_TS_TA_1" },
     { F_FR_NA_1, "F_FR_NA_1" }, { F_SR_NA_1, "F_SR_NA_1" }, { F_SC_NA_1, "F_SC_NA_1" }, { F_LS_NA_1, "F_LS_NA_1" },
-    { F_AF_NA_1, "F_AF_NA_1" }, { F_SG_NA_1, "F_SG_NA_1" },
+    { F_AF_NA_1, "F_AF_NA_1" }, { F_SG_NA_1, "F_SG_NA_1" }, { F_DR_TA_1, "F_DR_TA_1" },
 };
 
 const char* typeName(int typeId)

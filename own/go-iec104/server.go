@@ -3,7 +3,10 @@
 package main
 
 import (
+	"cmp"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"net"
 	"os"
@@ -40,11 +43,39 @@ type station struct {
 	fx       *fixture
 	commands map[int]*command
 	sessions map[uint64]bool // data transfer started, by session
+	stored   map[asdu.IOA]*storedFile
+	arriving map[arrivalKey]*arrival
+}
+
+// storedFile is an upload that arrived complete.
+type storedFile struct {
+	name uint16
+	data []byte
+}
+
+// storedSectionSize is the size of the sections of a stored file when it is
+// fetched, which FIXTURES.md leaves to the station. No stored file can have more
+// sections than the file transfer allows.
+const storedSectionSize = 2048
+
+// arrivalKey is a file on its way to the station: a session transfers one per
+// address.
+type arrivalKey struct {
+	session uint64
+	ioa     asdu.IOA
+}
+
+// arrival is what arrived of such a file, for the event. The library keeps that
+// to itself until the file is complete.
+type arrival struct {
+	name uint16
+	data []byte
 }
 
 func newStation(fx *fixture) *station {
 	st := &station{ca: asdu.CommonAddr(fx.Station.CommonAddress), fx: fx,
-		commands: map[int]*command{}, sessions: map[uint64]bool{}}
+		commands: map[int]*command{}, sessions: map[uint64]bool{},
+		stored: map[asdu.IOA]*storedFile{}, arriving: map[arrivalKey]*arrival{}}
 	for _, c := range fx.Commands {
 		st.commands[c.IOA] = c
 	}
@@ -63,22 +94,33 @@ func (st *station) handler() server.Handler {
 		asdu.C_SC_TA_1, asdu.C_DC_TA_1, asdu.C_RC_TA_1, asdu.C_SE_TA_1, asdu.C_SE_TB_1, asdu.C_SE_TC_1} {
 		mux.HandleFunc(t, one(st.command))
 	}
+	// Two file servers, because OnDone does not say which way a file went: this
+	// one for what the station sends, and the directory.
 	files := server.NewFileServer(server.FileSourceFunc(st.openFile))
+	files.Directory = st.directory
 	files.OnDone = func(_ *server.Session, _ asdu.CommonAddr, ioa asdu.IOA, name uint16, err error) {
 		e := event("file-transfer")
 		e["ioa"], e["name"], e["success"] = int(ioa), int(name), err == nil
 		emit(e)
 	}
-	// Only the monitor direction: the contract has no upload and no directory.
-	fileRequest := one(func(s *server.Session, req *asdu.ASDU) {
-		if req.Cause != asdu.CauseFileTransfer {
-			_ = s.Reject(req, asdu.CauseUnknownCause)
-			return
-		}
-		files.HandleASDU(s, st.own(req))
-	})
+	fileRequest := one(func(s *server.Session, req *asdu.ASDU) { files.HandleASDU(s, st.own(req)) })
 	mux.HandleFunc(asdu.F_SC_NA_1, fileRequest)
 	mux.HandleFunc(asdu.F_AF_NA_1, fileRequest)
+	// And this one for what it takes.
+	uploads := server.NewFileServer(nil)
+	uploads.Sink = st
+	uploads.OnDone = func(s *server.Session, _ asdu.CommonAddr, ioa asdu.IOA, _ uint16, err error) {
+		st.fileReceived(arrivalKey{s.ID(), ioa}, err == nil)
+	}
+	fileUpload := one(func(s *server.Session, req *asdu.ASDU) {
+		if seg, ok := req.First().(asdu.FileSegment); ok {
+			st.segment(arrivalKey{s.ID(), seg.IOA}, seg)
+		}
+		uploads.HandleASDU(s, st.own(req))
+	})
+	for _, t := range []asdu.TypeID{asdu.F_FR_NA_1, asdu.F_SR_NA_1, asdu.F_SG_NA_1, asdu.F_LS_NA_1} {
+		mux.HandleFunc(t, fileUpload)
+	}
 	return mux
 }
 
@@ -112,10 +154,20 @@ func (st *station) onState(s *server.Session, state iec104.State, _ error) {
 	st.mu.Lock()
 	started, known := st.sessions[s.ID()]
 	st.sessions[s.ID()] = state == iec104.StateStarted
+	var cut []arrivalKey
 	if state == iec104.StateDisconnected {
 		delete(st.sessions, s.ID())
+		for key := range st.arriving {
+			if key.session == s.ID() {
+				cut = append(cut, key)
+			}
+		}
 	}
 	st.mu.Unlock()
+	// The library says nothing of a transfer that ends with its session.
+	for _, key := range cut {
+		st.fileReceived(key, false)
+	}
 	name := ""
 	switch {
 	case state == iec104.StateDisconnected:
@@ -350,12 +402,86 @@ func (st *station) command(s *server.Session, raw *asdu.ASDU) {
 }
 
 func (st *station) openFile(_ *server.Session, _ asdu.CommonAddr, ioa asdu.IOA, name uint16) (server.File, bool) {
+	st.mu.Lock()
+	stored := st.stored[ioa]
+	st.mu.Unlock()
+	if stored != nil && stored.name == name {
+		return server.NewFile(stored.data, storedSectionSize), true
+	}
 	for _, f := range st.fx.Files {
 		if asdu.IOA(f.IOA) == ioa && uint16(f.Name) == name {
 			return server.NewFile(f.content(), f.SectionSize), true
 		}
 	}
 	return server.File{}, false
+}
+
+// AcceptFile says whether an upload has a place: the address and name of an entry
+// of the fixture, and a length it takes.
+func (st *station) AcceptFile(s *server.Session, _ asdu.CommonAddr, ioa asdu.IOA, name uint16, length int) bool {
+	for _, u := range st.fx.Uploads {
+		if asdu.IOA(u.IOA) == ioa && uint16(u.Name) == name && length >= 1 && length <= u.MaxSize {
+			st.mu.Lock()
+			st.arriving[arrivalKey{s.ID(), ioa}] = &arrival{name: name}
+			st.mu.Unlock()
+			return true
+		}
+	}
+	return false
+}
+
+// StoreFile keeps a file that arrived complete, in place of any earlier one.
+func (st *station) StoreFile(_ *server.Session, _ asdu.CommonAddr, ioa asdu.IOA, name uint16, file server.File) error {
+	data := make([]byte, 0, file.Len())
+	for _, section := range file.Sections {
+		data = append(data, section...)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.stored[ioa] = &storedFile{name: name, data: data}
+	return nil
+}
+
+// segment notes what arrived, for the event. The handler of the session runs one
+// ASDU at a time, so nothing else touches this arrival.
+func (st *station) segment(key arrivalKey, seg asdu.FileSegment) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if a := st.arriving[key]; a != nil && a.name == seg.Name {
+		a.data = append(a.data, seg.Data...)
+	}
+}
+
+// fileReceived ends an arrival with its event.
+func (st *station) fileReceived(key arrivalKey, success bool) {
+	st.mu.Lock()
+	a := st.arriving[key]
+	delete(st.arriving, key)
+	st.mu.Unlock()
+	if a == nil {
+		return
+	}
+	sum := sha256.Sum256(a.data)
+	e := event("file-received")
+	e["ioa"], e["name"], e["length"], e["sha256"], e["success"] = int(key.ioa), int(a.name), len(a.data), hex.EncodeToString(sum[:]), success
+	emit(e)
+}
+
+// directory lists the files of the fixture and the stored uploads, in ascending
+// address order. The library marks the last one.
+func (st *station) directory(*server.Session, asdu.CommonAddr, asdu.IOA) []asdu.FileDirectoryEntry {
+	now := asdu.Now()
+	var entries []asdu.FileDirectoryEntry
+	for _, f := range st.fx.Files {
+		entries = append(entries, asdu.FileDirectoryEntry{IOA: asdu.IOA(f.IOA), Name: uint16(f.Name), Length: uint32(f.Size), Time: now})
+	}
+	st.mu.Lock()
+	for ioa, f := range st.stored {
+		entries = append(entries, asdu.FileDirectoryEntry{IOA: ioa, Name: f.name, Length: uint32(len(f.data)), Time: now})
+	}
+	st.mu.Unlock()
+	slices.SortFunc(entries, func(a, b asdu.FileDirectoryEntry) int { return cmp.Compare(a.IOA, b.IOA) })
+	return entries
 }
 
 // listen opens the listener of a station and starts serving on it.

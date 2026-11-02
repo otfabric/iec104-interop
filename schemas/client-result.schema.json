@@ -11,7 +11,7 @@
     "adapter": { "type": "string" },
     "operation": {
       "enum": ["connect", "interrogate", "counter-interrogate", "read", "clock-sync", "test-command", "command",
-               "monitor", "file-get"]
+               "monitor", "file-get", "file-put", "file-dir"]
     },
     "ok": { "type": "boolean" },
     "error": {
@@ -48,7 +48,7 @@
     "secured": { "description": "With --secure only: the association was established.", "type": "boolean" },
     "tls": { "description": "With --tls only: STARTDT con arrived over the TLS session.", "type": "boolean" },
     "file": {
-      "description": "file-get only: what was downloaded.",
+      "description": "file-get and file-put only: what was transferred.",
       "type": "object",
       "required": ["ioa", "name", "length", "received", "sections", "sha256"],
       "properties": {
@@ -60,11 +60,26 @@
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
       }
     },
+    "directory": {
+      "description": "file-dir only: the entries received, in order.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ioa", "nof", "lof", "sof"],
+        "properties": {
+          "ioa": { "type": "integer", "minimum": 0, "maximum": 16777215 },
+          "nof": { "type": "integer", "minimum": 0, "maximum": 65535 },
+          "lof": { "type": "integer", "minimum": 0 },
+          "sof": { "type": "integer", "minimum": 0, "maximum": 255 }
+        }
+      }
+    },
     "asdus": { "type": "array", "items": { "$ref": "#/$defs/asdu" } },
     "elapsedMs": { "type": "number", "minimum": 0 }
   },
   "allOf": [
-    { "if": { "properties": { "operation": { "const": "file-get" } } }, "then": { "required": ["file"] } },
+    { "if": { "properties": { "operation": { "enum": ["file-get", "file-put"] } } }, "then": { "required": ["file"] } },
+    { "if": { "properties": { "operation": { "const": "file-dir" } } }, "then": { "required": ["directory"] } },
     { "if": { "properties": { "ok": { "const": true } } }, "then": { "properties": { "error": { "type": "null" } } },
       "else": { "properties": { "error": { "type": "object" } } } }
   ],

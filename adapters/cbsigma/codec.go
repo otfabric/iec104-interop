@@ -27,7 +27,7 @@ func init() {
 		iec.CScNa1, iec.CDcNa1, iec.CRcNa1, iec.CSeNa1, iec.CSeNb1, iec.CSeNc1,
 		iec.CScTa1, iec.CDcTa1, iec.CRcTa1, iec.CSeTa1, iec.CSeTb1, iec.CSeTc1,
 		iec.MEiNa1, iec.CIcNa1, iec.CCiNa1, iec.CRdNa1, iec.CCsNa1, iec.CTsTa1,
-		iec.FFrNa1, iec.FSrNa1, iec.FScNa1, iec.FLsNa1, iec.FAfNa1, iec.FSgNa1,
+		iec.FFrNa1, iec.FSrNa1, iec.FScNa1, iec.FLsNa1, iec.FAfNa1, iec.FSgNa1, iec.FDrTa1,
 	} {
 		typeNames[t] = t.String()
 	}
@@ -158,7 +158,7 @@ func normalized(o object, v float64) {
 func hasTime(t iec.TypeID) bool {
 	switch t {
 	case iec.MSpTb1, iec.MDpTb1, iec.MStTb1, iec.MBoTb1, iec.MMeTd1, iec.MMeTe1, iec.MMeTf1, iec.MItTb1,
-		iec.CScTa1, iec.CDcTa1, iec.CRcTa1, iec.CSeTa1, iec.CSeTb1, iec.CSeTc1, iec.CCsNa1, iec.CTsTa1:
+		iec.CScTa1, iec.CDcTa1, iec.CRcTa1, iec.CSeTa1, iec.CSeTb1, iec.CSeTc1, iec.CCsNa1, iec.CTsTa1, iec.FDrTa1:
 		return true
 	}
 	return false
@@ -222,6 +222,8 @@ func objectJSON(t iec.TypeID, i iec.Object) object {
 		o["nof"], o["nos"], o["afq"] = int(i.File), int(i.Section), int(i.Qualifier)
 	case iec.FSgNa1:
 		o["nof"], o["nos"], o["data"] = int(i.File), int(i.Section), hex.EncodeToString(i.Segment)
+	case iec.FDrTa1:
+		o["nof"], o["lof"], o["sof"] = int(i.File), int(i.Length), int(i.Status)
 	}
 	return o
 }

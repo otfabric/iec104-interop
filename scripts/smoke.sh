@@ -64,6 +64,10 @@ expect_exit 2 "client with an unknown flag" "${IMAGE}" client interrogate --host
 expect_exit 2 "command without --value" "${IMAGE}" client command --host nowhere --type C_SC_NA_1 --ioa 500
 expect_exit 2 "command with a bad value" "${IMAGE}" client command --host nowhere --type C_SE_NB_1 --ioa 504 --value 99999
 expect_exit 2 "server with an unknown flag" "${IMAGE}" server --frobnicate
+expect_exit 2 "file-put without --size" "${IMAGE}" client file-put --host nowhere --ioa 31000
+expect_exit 2 "file-put without --ioa" "${IMAGE}" client file-put --host nowhere --size 100
+expect_exit 2 "file-put with a section larger than the file" "${IMAGE}" client file-put --host nowhere --ioa 31000 --size 100 --section-size 101
+expect_exit 2 "file-dir with a flag it does not have" "${IMAGE}" client file-dir --host nowhere --ioa 1
 expect_exit 2 "server with invalid APCI parameters" "${IMAGE}" server --k 4 --w 9
 # A security flag is unknown to an image without secureAuthentication; for
 # one with it, every flag needs --secure and --secure needs the identity.
@@ -89,6 +93,10 @@ jq '.points[0].groups = [17]' "${ROOT}/fixtures/baseline/fixture.json" > "${bad}
 expect_exit 4 "server with an interrogation group out of range" -v "${bad}:/bad:ro" "${IMAGE}" server --fixture /bad/fixture.json
 jq '(.points[] | select(.type == "M_IT_NA_1")).groups = [1]' "${ROOT}/fixtures/baseline/fixture.json" > "${bad}/fixture.json"
 expect_exit 4 "server with an integrated total in a group" -v "${bad}:/bad:ro" "${IMAGE}" server --fixture /bad/fixture.json
+jq '.uploads = [{"ioa": 30000, "name": 1, "maxSize": 100}]' "${ROOT}/fixtures/baseline/fixture.json" > "${bad}/fixture.json"
+expect_exit 4 "server with an upload on the address of a file" -v "${bad}:/bad:ro" "${IMAGE}" server --fixture /bad/fixture.json
+jq '.uploads = [{"ioa": 31000, "name": 1, "maxSize": 65537}]' "${ROOT}/fixtures/baseline/fixture.json" > "${bad}/fixture.json"
+expect_exit 4 "server with an upload that is too large" -v "${bad}:/bad:ro" "${IMAGE}" server --fixture /bad/fixture.json
 jq '(.points[] | select(.type == "M_BO_NA_1")).quality = ["CY"]' "${ROOT}/fixtures/baseline/fixture.json" > "${bad}/fixture.json"
 expect_exit 4 "server with a flag a bitstring cannot have" -v "${bad}:/bad:ro" "${IMAGE}" server --fixture /bad/fixture.json
 

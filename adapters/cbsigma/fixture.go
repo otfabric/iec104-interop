@@ -46,6 +46,14 @@ type fileSpec struct {
 	Name        int `json:"name"`
 	Size        int `json:"size"`
 	SectionSize int `json:"sectionSize"`
+
+	data []byte // the content of a stored upload; nil for a file of the fixture
+}
+
+type uploadSpec struct {
+	IOA     int `json:"ioa"`
+	Name    int `json:"name"`
+	MaxSize int `json:"maxSize"`
 }
 
 type fixture struct {
@@ -54,9 +62,10 @@ type fixture struct {
 	Station       struct {
 		CommonAddr int `json:"commonAddress"`
 	} `json:"station"`
-	Points   []*point    `json:"points"`
-	Commands []*command  `json:"commands"`
-	Files    []*fileSpec `json:"files"`
+	Points   []*point      `json:"points"`
+	Commands []*command    `json:"commands"`
+	Files    []*fileSpec   `json:"files"`
+	Uploads  []*uploadSpec `json:"uploads"`
 }
 
 var pointTypes = map[string]iec.TypeID{
@@ -99,6 +108,9 @@ func (fx *fixture) hasGroup(group int) bool {
 
 // content is the content of a file: octet i is (i + ioa) mod 251.
 func (f *fileSpec) content() []byte {
+	if f.data != nil {
+		return f.data
+	}
 	b := make([]byte, f.Size)
 	for i := range b {
 		b[i] = byte((i + f.IOA) % 251)
@@ -231,6 +243,15 @@ func loadFixture(path string) (*fixture, error) {
 			return nil, fmt.Errorf("file %d: duplicate information object address", f.IOA)
 		}
 		seen[f.IOA] = true
+	}
+	for i, u := range fx.Uploads {
+		if u.IOA < 1 || u.IOA > 0xFFFFFF || u.Name < 1 || u.Name > 255 || u.MaxSize < 1 || u.MaxSize > 65536 {
+			return nil, fmt.Errorf("upload %d: needs ioa, name (1..255) and maxSize (1..65536)", i)
+		}
+		if seen[u.IOA] {
+			return nil, fmt.Errorf("upload %d: duplicate information object address", u.IOA)
+		}
+		seen[u.IOA] = true
 	}
 	return fx, nil
 }

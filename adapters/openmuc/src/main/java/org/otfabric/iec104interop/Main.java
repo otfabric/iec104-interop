@@ -53,6 +53,8 @@ public final class Main {
             "                          [--qualifier N] [--with-time]",
             "      monitor             [--duration-ms N] [--max-asdus N]",
             "      file-get            --ioa N [--name N]",
+            "      file-put            --ioa N --size N [--name N] [--section-size N]",
+            "      file-dir",
             "  print-capabilities",
             "  print-fixture [NAME]",
             "  version",
@@ -146,10 +148,10 @@ public final class Main {
         // j60870 has no procedure of file transfer; the adapter runs it (FileStation).
         f.addProperty("fileServer", true);
         f.addProperty("fileClient", true);
-        f.addProperty("fileUploadServer", false);
-        f.addProperty("fileUploadClient", false);
-        f.addProperty("fileDirectoryServer", false);
-        f.addProperty("fileDirectoryClient", false);
+        f.addProperty("fileUploadServer", true);
+        f.addProperty("fileUploadClient", true);
+        f.addProperty("fileDirectoryServer", true);
+        f.addProperty("fileDirectoryClient", true);
         f.addProperty("redundancyServer", false);
         f.addProperty("redundancyClient", false);
         f.addProperty("secureAuthentication", false);
@@ -160,7 +162,7 @@ public final class Main {
         c.add("commandTypes",
                 strings("C_SC_NA_1", "C_DC_NA_1", "C_RC_NA_1", "C_SE_NA_1", "C_SE_NB_1", "C_SE_NC_1"));
         c.add("clientOperations", strings("connect", "interrogate", "counter-interrogate", "read", "clock-sync",
-                "test-command", "command", "monitor", "file-get"));
+                "test-command", "command", "monitor", "file-get", "file-put", "file-dir"));
         emit(c);
         return EXIT_OK;
     }

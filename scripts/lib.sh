@@ -131,10 +131,13 @@ make_identities() {
 # What two adapters must agree on: everything except who answered, how long it
 # took, the error message (for people, not part of the contract), the wall-clock
 # time tags and the NOS of the last-section F_LS_NA_1 (LSQ 1 or 2), which the
-# stacks fill differently (docs/FIXTURES.md).
+# stacks fill differently, repeated by the F_AF_NA_1 of an upload (AFQ 1 or 2),
+# and whether a directory is a sequence (docs/FIXTURES.md).
 # shellcheck disable=SC2034
 NORMALIZE='del(.adapter, .elapsedMs, .error.message) | (.asdus[]?.objects[]? |= del(.time))
-    | (.asdus[]? |= if .type == "F_LS_NA_1" then (.objects[]? |= if .lsq == 1 or .lsq == 2 then del(.nos) else . end) else . end)'
+    | (.asdus[]? |= if .type == "F_LS_NA_1" then (.objects[]? |= if .lsq == 1 or .lsq == 2 then del(.nos) else . end) else . end)
+    | (.asdus[]? |= if .type == "F_AF_NA_1" then (.objects[]? |= if (.afq % 16) == 1 or (.afq % 16) == 2 then del(.nos) else . end) else . end)
+    | (.asdus[]? |= if .type == "F_DR_TA_1" then del(.sequence) | (.objects[]? |= del(.timeInvalid)) else . end)'
 
 # One line that states the outcome of an operation; the expectation format of
 # tests/cases.tsv.

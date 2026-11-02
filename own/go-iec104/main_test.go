@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -25,6 +26,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/otfabric/go-iec104/asdu"
+	"github.com/otfabric/go-iec104/client"
 )
 
 // The repository's fixtures are not in the build stage, so these tests carry
@@ -45,7 +49,8 @@ const testFixture = `{
     {"ioa": 1001, "type": "C_SC_NA_1", "target": 100, "selectRequired": true},
     {"ioa": 1002, "type": "C_RC_NA_1", "target": 300}
   ],
-  "files": [{"ioa": 2000, "name": 1, "size": 1000, "sectionSize": 300}]
+  "files": [{"ioa": 2000, "name": 1, "size": 1000, "sectionSize": 300}],
+  "uploads": [{"ioa": 3000, "name": 1, "maxSize": 8192}, {"ioa": 4000, "name": 2, "maxSize": 100}, {"ioa": 5000, "name": 1, "maxSize": 100}]
 }`
 
 type output struct {
@@ -151,6 +156,13 @@ func TestUsageErrors(t *testing.T) {
 		{"server", "--port", "0"},
 		{"server", "--secure"},
 		{"server", "--roles", "VIEWER"},
+		{"client", "file-put", "--host", "h", "--ioa", "1"},
+		{"client", "file-put", "--host", "h", "--size", "1"},
+		{"client", "file-put", "--host", "h", "--ioa", "1", "--size", "0"},
+		{"client", "file-put", "--host", "h", "--ioa", "1", "--size", "65537"},
+		{"client", "file-put", "--host", "h", "--ioa", "1", "--size", "100", "--section-size", "101"},
+		{"client", "file-put", "--host", "h", "--ioa", "1", "--size", "255", "--section-size", "1"},
+		{"client", "file-dir", "--host", "h", "--ioa", "1"},
 		{"server", "--tls"},
 		{"server", "--tls-trust", "t"},
 		{"client", "connect", "--host", "h", "--tls"},
@@ -180,6 +192,9 @@ func TestInvalidFixtures(t *testing.T) {
 		"target":       `{"schemaVersion": "1.0", "name": "x", "station": {"commonAddress": 1}, "points": [{"ioa": 1, "type": "M_SP_NA_1", "value": true}], "commands": [{"ioa": 2, "type": "C_DC_NA_1", "target": 1}]}`,
 		"report cause": `{"schemaVersion": "1.0", "name": "x", "station": {"commonAddress": 1}, "points": [{"ioa": 1, "type": "M_SP_NA_1", "value": true}], "commands": [{"ioa": 2, "type": "C_SC_NA_1", "target": 1, "reportCause": 5}]}`,
 		"file":         `{"schemaVersion": "1.0", "name": "x", "station": {"commonAddress": 1}, "points": [{"ioa": 1, "type": "M_SP_NA_1", "value": true}], "files": [{"ioa": 2, "name": 1, "size": 10, "sectionSize": 11}]}`,
+		"upload size":  `{"schemaVersion": "1.0", "name": "x", "station": {"commonAddress": 1}, "points": [{"ioa": 1, "type": "M_SP_NA_1", "value": true}], "uploads": [{"ioa": 2, "name": 1, "maxSize": 65537}]}`,
+		"upload name":  `{"schemaVersion": "1.0", "name": "x", "station": {"commonAddress": 1}, "points": [{"ioa": 1, "type": "M_SP_NA_1", "value": true}], "uploads": [{"ioa": 2, "name": 0, "maxSize": 1}]}`,
+		"upload file":  `{"schemaVersion": "1.0", "name": "x", "station": {"commonAddress": 1}, "points": [{"ioa": 1, "type": "M_SP_NA_1", "value": true}], "files": [{"ioa": 2, "name": 1, "size": 10, "sectionSize": 10}], "uploads": [{"ioa": 2, "name": 1, "maxSize": 1}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if code := run([]string{"server", "--port", freePort(t), "--fixture", writeFixture(t, content)}); code != exitInvalidFixture {
@@ -705,6 +720,149 @@ func TestAgainstOwnServer(t *testing.T) {
 		r, _ = operate(t, out, common, "file-get", "--ioa", "2000", "--name", "9")
 		if r["ok"] != false || errorCode(r) != "negative-confirmation" {
 			t.Errorf("result %v", r)
+		}
+	})
+
+	directory := func(t *testing.T) string {
+		t.Helper()
+		r, _ := operate(t, out, common, "file-dir")
+		var entries []string
+		for _, e := range list(r["directory"]) {
+			entries = append(entries, fmt.Sprint(e["ioa"], ":", e["nof"], ":", e["lof"], ":", e["sof"]))
+		}
+		return strings.Join(entries, " ")
+	}
+
+	t.Run("directory", func(t *testing.T) {
+		if got := directory(t); got != "2000:1:1000:32" {
+			t.Errorf("directory %s", got)
+		}
+	})
+
+	t.Run("upload", func(t *testing.T) {
+		r, events := operate(t, out, common, "file-put", "--ioa", "3000", "--size", "5000", "--section-size", "2048")
+		f := r["file"].(object)
+		sum := sha256.Sum256(fileContent(3000, 5000))
+		want := hex.EncodeToString(sum[:])
+		if f["length"] != float64(5000) || f["received"] != float64(5000) || f["sections"] != float64(3) || f["sha256"] != want {
+			t.Errorf("file %v", f)
+		}
+		e := find(t, events, "file-received")
+		if e["ioa"] != float64(3000) || e["name"] != float64(1) || e["length"] != float64(5000) || e["sha256"] != want || e["success"] != true {
+			t.Errorf("event %v", e)
+		}
+		for _, e := range events {
+			if e["event"] == "file-transfer" {
+				t.Errorf("an upload is not a download: %v", e)
+			}
+		}
+		r, events = operate(t, out, common, "file-get", "--ioa", "3000")
+		if g := r["file"].(object); g["sha256"] != want {
+			t.Errorf("the stored file reads back as %v", g)
+		}
+		find(t, events, "file-transfer")
+		if got := directory(t); got != "2000:1:1000:0 3000:1:5000:32" {
+			t.Errorf("directory %s", got)
+		}
+		// A second upload replaces the file.
+		operate(t, out, common, "file-put", "--ioa", "3000", "--size", "10")
+		if got := directory(t); got != "2000:1:1000:0 3000:1:10:32" {
+			t.Errorf("directory %s", got)
+		}
+	})
+
+	t.Run("refused upload", func(t *testing.T) {
+		for _, args := range [][]string{{"--ioa", "3999"}, {"--ioa", "3000", "--name", "9"}, {"--ioa", "2000"}, {"--ioa", "5000", "--size", "101"}} {
+			if len(args) == 2 || args[2] == "--name" {
+				args = append(args, "--size", "10")
+			}
+			r, events := operate(t, out, common, "file-put", args...)
+			if errorCode(r) != "negative-confirmation" || len(list(r["confirmations"])) != 0 {
+				t.Errorf("%v: result %v", args, r)
+			}
+			if f := r["file"].(object); f["received"] != float64(0) || f["sections"] != float64(0) {
+				t.Errorf("%v: file %v", args, f)
+			}
+			for _, e := range events {
+				if e["event"] == "file-received" {
+					t.Errorf("%v: a refused upload is not received: %v", args, e)
+				}
+			}
+		}
+	})
+
+	address := func(t *testing.T) string {
+		t.Helper()
+		return net.JoinHostPort(common[1], common[3])
+	}
+	transfer := func(t *testing.T) (*client.Client, chan *asdu.ASDU) {
+		t.Helper()
+		got := make(chan *asdu.ASDU, 16)
+		c, err := client.New(address(t), client.WithHandler(client.HandlerFunc(func(a *asdu.ASDU) { got <- a })))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Connect(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		return c, got
+	}
+	step := func(t *testing.T, c *client.Client, got chan *asdu.ASDU, objs ...asdu.InformationObject) asdu.InformationObject {
+		t.Helper()
+		for _, o := range objs {
+			if err := c.Send(context.Background(), asdu.New(asdu.CauseFileTransfer, 1, o)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		select {
+		case a := <-got:
+			return a.First()
+		case <-time.After(3 * time.Second):
+			t.Fatal("no answer from the station")
+			return nil
+		}
+	}
+	// waitReceived returns the file-received event.
+	waitReceived := func(t *testing.T) object {
+		t.Helper()
+		for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			for _, d := range out.take(t) {
+				if d["event"] == "file-received" {
+					return d
+				}
+			}
+		}
+		t.Fatal("no file-received event")
+		return nil
+	}
+
+	t.Run("upload with a wrong checksum", func(t *testing.T) {
+		c, got := transfer(t)
+		defer func() { _ = c.Close() }()
+		out.take(t)
+		step(t, c, got, asdu.FileReady{IOA: 4000, Name: 2, Length: 3})
+		step(t, c, got, asdu.SectionReady{IOA: 4000, Name: 2, Section: 1, Length: 3})
+		ack := step(t, c, got, asdu.FileSegment{IOA: 4000, Name: 2, Section: 1, Data: []byte{1, 2, 3}},
+			asdu.FileLastSegment{IOA: 4000, Name: 2, Section: 1, Qualifier: asdu.LastSectionNoDeactivation, Checksum: 7})
+		if a, ok := ack.(asdu.FileAck); !ok || a.Qualifier != asdu.AckSectionNegative {
+			t.Errorf("answer %#v, want a negative acknowledgement", ack)
+		}
+		sum := sha256.Sum256([]byte{1, 2, 3})
+		if e := waitReceived(t); e["success"] != false || e["length"] != float64(3) || e["sha256"] != hex.EncodeToString(sum[:]) {
+			t.Errorf("event %v", e)
+		}
+		if got := directory(t); strings.Contains(got, "4000:") {
+			t.Errorf("a file that failed is stored: %s", got)
+		}
+	})
+
+	t.Run("upload cut off", func(t *testing.T) {
+		c, got := transfer(t)
+		out.take(t)
+		step(t, c, got, asdu.FileReady{IOA: 4000, Name: 2, Length: 3})
+		_ = c.Close()
+		if e := waitReceived(t); e["success"] != false || e["ioa"] != float64(4000) {
+			t.Errorf("event %v", e)
 		}
 	})
 }

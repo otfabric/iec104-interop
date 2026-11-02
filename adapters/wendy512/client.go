@@ -282,6 +282,7 @@ func runClient(op string, a *args) (int, error) {
 	var (
 		qoi, qcc           = 20, 5
 		ioa, hold, maxASDU int
+		name, size, secSz  int
 		duration           = 1000
 		clock              = time.Now()
 		mode               = "direct"
@@ -320,6 +321,11 @@ func runClient(op string, a *args) (int, error) {
 		if duration, err = a.num("--duration-ms", 1000); err == nil {
 			maxASDU, err = a.num("--max-asdus", 0)
 		}
+	case "file-put":
+		if ioa, name, size, secSz, err = parseFilePut(a); err != nil {
+			return 0, err
+		}
+	case "file-dir":
 	default:
 		err = usagef("client: unknown operation %s", op)
 	}
@@ -361,6 +367,8 @@ func runClient(op string, a *args) (int, error) {
 		s.update(func() { s.closed = true })
 	})
 	conn := withOriginator{c, oa}
+	put := &filePut{ioa: ioa, name: name, size: size, sectionSize: secSz, data: fileOctets(ioa, size)}
+	directory := []object{}
 
 	exitCode := exitOperationFailed
 	stopdt := false
@@ -497,6 +505,10 @@ func runClient(op string, a *args) (int, error) {
 					err = s.awaitTermination(timeout)
 				}
 			}
+		case "file-put":
+			err = runFilePut(s, conn, ca, oa, timeout, put)
+		case "file-dir":
+			err = runFileDir(s, conn, ca, oa, timeout, &directory)
 		default: // monitor
 			s.waitFor(func() bool { return maxASDU > 0 && len(s.asdus) >= maxASDU }, time.Duration(duration)*time.Millisecond)
 			if s.isClosed() {
@@ -545,6 +557,12 @@ func runClient(op string, a *args) (int, error) {
 	r["terminated"] = s.terminated
 	r["asdus"] = append([]object{}, s.asdus...)
 	s.mu.Unlock()
+	switch op {
+	case "file-put":
+		r["file"] = put.result()
+	case "file-dir":
+		r["directory"] = directory
+	}
 	r["elapsedMs"] = time.Since(begin).Milliseconds()
 	emit(r)
 	return exitCode, nil
