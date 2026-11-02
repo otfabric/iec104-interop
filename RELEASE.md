@@ -27,6 +27,47 @@ manual workflow and no releases (`own/go-iec104/README.md`).
 
 ---
 
+## v0.5.0
+
+**Date:** 2026-11-02
+**Previous release:** v0.4.1
+
+### Added
+
+- Container contract 1.3 ([docs/CONTAINER_CONTRACT.md](docs/CONTAINER_CONTRACT.md)). Images from v0.4.1 keep working: every new flag, operation and field is behind a feature in `print-capabilities`.
+- Interrogation groups (QOI 21 to 36) with `groups` in fixtures, the feature `groupInterrogation`, and the fixture `extended`. The fixture `baseline` is unchanged.
+- A quality on `M_BO_NA_1`, the feature `pointQualityOnBitstring`.
+- IEC 62351-3 TLS with mutual authentication: the transport security flags, `tls` in the `ready` event and the result document, the error `tls-failed`, the features `tlsServer` and `tlsClient`, and `tls` for an image with both. lib60870 is built with Mbed TLS 3.6.7, pinned by the SHA-256 of its tarball. Certificates are made at run time.
+- File upload and directory: the operations `file-put` and `file-dir`, the server event `file-received`, `uploads` in fixtures, `directory` in the result document, `F_DR_TA_1` in ASDU documents, and the features `fileUploadServer`, `fileUploadClient`, `fileDirectoryServer` and `fileDirectoryClient`.
+- Redundancy groups: the server flag `--redundancy-group`, `redundancyGroup` in the `ready` event, the operation `redundancy` with switchover by STOPDT and by takeover, and the features `redundancyServer` and `redundancyClient`.
+- openmuc and wendy512 serve files (`fileServer`).
+- `tests/feature-cases.tsv`, cases by feature, run across every pair that declares it.
+
+### Coverage
+
+| Feature | lib60870 | openmuc | wendy512 | cbsigma |
+|---------|:--:|:--:|:--:|:--:|
+| `groupInterrogation`, `pointQualityOnBitstring` | yes | yes | yes | yes |
+| `tlsServer` | yes | yes | no | yes |
+| `tlsClient` | yes | yes | yes | yes |
+| `fileServer`, `fileUploadClient`, `fileDirectoryServer`, `fileDirectoryClient` | yes | yes | yes | yes |
+| `fileClient`, `fileUploadServer` | yes | yes | no | yes |
+| `redundancyServer` | yes | yes | no | yes |
+| `redundancyClient` | yes | yes | yes | yes |
+
+Each no is a gap of go-iecp5 v1.2.6, with evidence in [docs/CAPABILITIES.md](docs/CAPABILITIES.md). Not compared across stacks: NOS of `F_AF_NA_1` with AFQ 1 and 2, `sequence` and `timeInvalid` of `F_DR_TA_1`, whether a connection taken over is closed, and the error code of a TLS client that meets a station without TLS. Redundancy over TLS has no cases.
+
+### Fixed
+
+- `own-go-iec104.yml` failed to fail: the interop run was piped into `tee` without `pipefail`, so a failed run could still publish the image. The published `iec104-interop-otfabric:v0.1.1` logged 0 failed and is not affected.
+- `manifest.json` of a release names the contract from `versions.yaml`; it said `1.2` whatever the contract was.
+
+### Evidence
+
+CI at 4b0f1d4, amd64 and arm64: smoke lib60870 55/0, openmuc 55/0, wendy512 51/0, cbsigma 59/0; interop 2153 passed, 0 failed, 35 known upstream bugs (the read bug of j60870 1.8.0), 262 skipped.
+
+---
+
 ## v0.4.1
 
 **Date:** 2026-11-01
