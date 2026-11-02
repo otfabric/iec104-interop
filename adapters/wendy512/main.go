@@ -41,7 +41,7 @@ const usage = `usage: iec104-interop <command>
 
   server [--fixture PATH] [--bind-address ADDR] [--port N] [--ready-file PATH] [APCI]
   client <operation> --host HOST [--port N] [--common-address N] [--originator-address N]
-         [--timeout-ms N] [--connect-timeout-ms N] [--collect-ms N] [APCI] [operation flags]
+         [--timeout-ms N] [--connect-timeout-ms N] [--collect-ms N] [APCI] [TLS] [operation flags]
       connect             [--hold-ms N]
       interrogate         [--qoi N]
       counter-interrogate [--qcc N]
@@ -51,11 +51,15 @@ const usage = `usage: iec104-interop <command>
       command             --type T --ioa N --value V [--mode direct|select|sbo|cancel]
                           [--qualifier N] [--with-time]
       monitor             [--duration-ms N] [--max-asdus N]
+      file-put            --ioa N [--name N] --size N [--section-size N]
+      file-dir
+      redundancy          [--switchover stopdt|takeover]
   print-capabilities
   print-fixture [NAME]
   version
 
   APCI: [--k N] [--w N] [--t0 S] [--t1 S] [--t2 S] [--t3 S]
+  TLS:  [--tls --tls-cert PATH --tls-key PATH --tls-trust PATH]
 
 See docs/CONTAINER_CONTRACT.md in https://github.com/otfabric/iec104-interop
 `
@@ -100,7 +104,7 @@ func printCapabilities() int {
 		"roles": object{"server": true, "client": true},
 		"features": object{
 			"generalInterrogation": true,
-			"groupInterrogation":   false,
+			"groupInterrogation":   true,
 			"counterInterrogation": true,
 			"read":                 true,
 			"clockSync":            true,
@@ -115,14 +119,32 @@ func printCapabilities() int {
 			"spontaneousOnCommand":    true,
 			"apciParameters":          true,
 			"multipleConnections":     true,
-			"pointQualityOnBitstring": false,
-			"tls":                     false,
+			"pointQualityOnBitstring": true,
+			// go-iecp5 dials TLS, but its server cannot listen with it.
+			"tls":       false,
+			"tlsServer": false,
+			"tlsClient": true,
 			// The server has no hook for STARTDT and STOPDT.
 			"dataTransferEvents": false,
-			// No file transfer procedure, and F_SG_NA_1 is dropped on reception.
+			// F_SG_NA_1 has no size in go-iecp5 and is dropped on reception, so
+			// anything that needs a segment to arrive is out. A station only
+			// sends segments: it receives F_SC_NA_1 and F_AF_NA_1, and the
+			// adapter runs the procedure itself.
 			"fileTransfer": false,
-			"fileServer":   false,
+			"fileServer":   true,
 			"fileClient":   false,
+			// A station that takes a file has to receive segments too. A client
+			// that sends one only receives F_SC_NA_1 and F_AF_NA_1, and a
+			// directory travels in types go-iecp5 has a size for.
+			"fileUploadServer":    false,
+			"fileUploadClient":    true,
+			"fileDirectoryServer": true,
+			"fileDirectoryClient": true,
+			// A session keeps whether it is started in a local variable and
+			// answers STARTDT and STOPDT itself, so the adapter cannot tell
+			// which connection of a group is started. A client has both frames.
+			"redundancyServer": false,
+			"redundancyClient": true,
 			// No IEC 62351-5.
 			"secureAuthentication": false,
 		},
@@ -130,7 +152,7 @@ func printCapabilities() int {
 			"M_ME_NC_1", "M_IT_NA_1"},
 		"commandTypes": []string{"C_SC_NA_1", "C_DC_NA_1", "C_RC_NA_1", "C_SE_NA_1", "C_SE_NB_1", "C_SE_NC_1"},
 		"clientOperations": []string{"connect", "interrogate", "counter-interrogate", "read", "clock-sync",
-			"test-command", "command", "monitor"},
+			"test-command", "command", "monitor", "file-put", "file-dir", "redundancy"},
 	})
 	return exitOK
 }

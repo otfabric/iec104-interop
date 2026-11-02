@@ -22,6 +22,7 @@ type point struct {
 	Transient *bool    `json:"transient"`
 	Sequence  *int     `json:"sequence"`
 	Quality   []string `json:"quality"`
+	Groups    []int    `json:"groups"`
 
 	typ   asdu.TypeID
 	value float64 // raw NVA for M_ME_NA_1; 0 or 1 for M_SP_NA_1
@@ -46,6 +47,12 @@ type fileSpec struct {
 	SectionSize int `json:"sectionSize"`
 }
 
+type uploadSpec struct {
+	IOA     int `json:"ioa"`
+	Name    int `json:"name"`
+	MaxSize int `json:"maxSize"`
+}
+
 type fixture struct {
 	SchemaVersion string `json:"schemaVersion"`
 	Name          string `json:"name"`
@@ -55,6 +62,9 @@ type fixture struct {
 	Points   []*point   `json:"points"`
 	Commands []*command `json:"commands"`
 	Files    []fileSpec `json:"files"`
+	// Validated like everywhere else; this station cannot take a file
+	// (capability fileUploadServer is false) and ignores them.
+	Uploads []uploadSpec `json:"uploads"`
 }
 
 var pointTypes = map[string]asdu.TypeID{
@@ -90,6 +100,33 @@ func (fx *fixture) command(ioa int) *command {
 	return nil
 }
 
+func (p *point) inGroup(group int) bool {
+	for _, g := range p.Groups {
+		if g == group {
+			return true
+		}
+	}
+	return false
+}
+
+func (fx *fixture) hasGroup(group int) bool {
+	for _, p := range fx.Points {
+		if p.inGroup(group) {
+			return true
+		}
+	}
+	return false
+}
+
+func (fx *fixture) file(ioa, name int) *fileSpec {
+	for i := range fx.Files {
+		if f := &fx.Files[i]; f.IOA == ioa && f.Name == name {
+			return f
+		}
+	}
+	return nil
+}
+
 func integer(v any, lo, hi float64) (float64, bool) {
 	f, ok := v.(float64)
 	return f, ok && f == math.Trunc(f) && f >= lo && f <= hi
@@ -99,8 +136,6 @@ func allowedQuality(t asdu.TypeID) string {
 	switch t {
 	case asdu.M_SP_NA_1, asdu.M_DP_NA_1:
 		return "BL SB NT IV"
-	case asdu.M_BO_NA_1:
-		return "" // kept empty for every adapter: lib60870 cannot set it
 	case asdu.M_IT_NA_1:
 		return "CY CA IV"
 	default:
@@ -168,6 +203,16 @@ func loadFixture(path string) (*fixture, error) {
 				return nil, fmt.Errorf("point %d: quality is not valid for %s", p.IOA, p.Type)
 			}
 		}
+		if len(p.Groups) > 0 && p.typ == asdu.M_IT_NA_1 {
+			return nil, fmt.Errorf("point %d: an interrogation does not report an integrated total", p.IOA)
+		}
+		groups := map[int]bool{}
+		for _, g := range p.Groups {
+			if g < 1 || g > 16 || groups[g] {
+				return nil, fmt.Errorf("point %d: groups are unique and 1..16", p.IOA)
+			}
+			groups[g] = true
+		}
 	}
 	sort.Slice(fx.Points, func(i, j int) bool { return fx.Points[i].IOA < fx.Points[j].IOA })
 
@@ -191,8 +236,6 @@ func loadFixture(path string) (*fixture, error) {
 			return nil, fmt.Errorf("command %d: reportCause must be 3 or 11", c.IOA)
 		}
 	}
-	// Files are validated like everywhere else, although this adapter does
-	// not serve them (capability fileServer is false).
 	for i, f := range fx.Files {
 		if f.IOA < 1 || f.IOA > 0xFFFFFF || f.Name < 1 || f.Name > 255 || f.Size < 1 || f.Size > 65536 ||
 			f.SectionSize < 1 || f.SectionSize > f.Size {
@@ -202,6 +245,15 @@ func loadFixture(path string) (*fixture, error) {
 			return nil, fmt.Errorf("file %d: duplicate information object address", f.IOA)
 		}
 		seen[f.IOA] = true
+	}
+	for i, u := range fx.Uploads {
+		if u.IOA < 1 || u.IOA > 0xFFFFFF || u.Name < 1 || u.Name > 255 || u.MaxSize < 1 || u.MaxSize > 65536 {
+			return nil, fmt.Errorf("upload %d: needs ioa, name (1..255) and maxSize (1..65536)", i)
+		}
+		if seen[u.IOA] {
+			return nil, fmt.Errorf("upload %d: duplicate information object address", u.IOA)
+		}
+		seen[u.IOA] = true
 	}
 	return fx, nil
 }

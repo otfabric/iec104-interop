@@ -41,6 +41,9 @@ def semantic_errors(fx):
         if ioa in points:
             errors.append(f"point {ioa}: duplicate information object address")
         points[ioa] = p
+    for p in fx.get("points", []):
+        if p.get("type") == "M_IT_NA_1" and "groups" in p:
+            errors.append(f"point {p.get('ioa')}: an integrated total has no interrogation group")
     seen = set()
     for c in fx.get("commands", []):
         ioa = c.get("ioa")
@@ -65,6 +68,14 @@ def semantic_errors(fx):
             errors.append(f"file {ioa}: address is also used by a point or a command")
         if isinstance(f.get("sectionSize"), int) and isinstance(f.get("size"), int) and f["sectionSize"] > f["size"]:
             errors.append(f"file {ioa}: sectionSize is larger than size")
+    uploads = set()
+    for u in fx.get("uploads", []):
+        ioa = u.get("ioa")
+        if ioa in uploads:
+            errors.append(f"upload {ioa}: duplicate information object address")
+        uploads.add(ioa)
+        if ioa in points or ioa in seen or ioa in files:
+            errors.append(f"upload {ioa}: address is also used by a point, a command or a file")
     return errors
 
 

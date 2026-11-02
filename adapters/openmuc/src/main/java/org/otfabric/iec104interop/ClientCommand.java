@@ -12,14 +12,24 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.BooleanSupplier;
 
+import javax.net.SocketFactory;
+
 import org.openmuc.j60870.ASdu;
 import org.openmuc.j60870.ASduType;
 import org.openmuc.j60870.CauseOfTransmission;
 import org.openmuc.j60870.ClientConnectionBuilder;
 import org.openmuc.j60870.Connection;
 import org.openmuc.j60870.ConnectionEventListener;
+import org.openmuc.j60870.ie.IeAckFileOrSectionQualifier;
+import org.openmuc.j60870.ie.IeChecksum;
 import org.openmuc.j60870.ie.IeDoubleCommand;
 import org.openmuc.j60870.ie.IeDoubleCommand.DoubleCommandState;
+import org.openmuc.j60870.ie.IeFileReadyQualifier;
+import org.openmuc.j60870.ie.IeFileSegment;
+import org.openmuc.j60870.ie.IeLastSectionOrSegmentQualifier;
+import org.openmuc.j60870.ie.IeLengthOfFileOrSection;
+import org.openmuc.j60870.ie.IeNameOfFile;
+import org.openmuc.j60870.ie.IeNameOfSection;
 import org.openmuc.j60870.ie.IeNormalizedValue;
 import org.openmuc.j60870.ie.IeQualifierOfCounterInterrogation;
 import org.openmuc.j60870.ie.IeQualifierOfInterrogation;
@@ -27,10 +37,14 @@ import org.openmuc.j60870.ie.IeQualifierOfSetPointCommand;
 import org.openmuc.j60870.ie.IeRegulatingStepCommand;
 import org.openmuc.j60870.ie.IeRegulatingStepCommand.StepCommandState;
 import org.openmuc.j60870.ie.IeScaledValue;
+import org.openmuc.j60870.ie.IeSectionReadyQualifier;
+import org.openmuc.j60870.ie.IeSelectAndCallQualifier;
 import org.openmuc.j60870.ie.IeShortFloat;
 import org.openmuc.j60870.ie.IeSingleCommand;
+import org.openmuc.j60870.ie.IeStatusOfFile;
 import org.openmuc.j60870.ie.IeTestSequenceCounter;
 import org.openmuc.j60870.ie.IeTime56;
+import org.openmuc.j60870.ie.InformationElement;
 import org.openmuc.j60870.ie.InformationObject;
 
 import com.google.gson.JsonArray;
@@ -51,9 +65,10 @@ final class ClientCommand implements ConnectionEventListener {
     }
 
     // Shared with the receive thread; guarded by this.
-    private final JsonArray asdus = new JsonArray();
+    private final JsonArray asdus;
     private final JsonArray confirmations = new JsonArray();
     private int asduCount;
+    private int spontaneous;
     private boolean closed;
     private boolean terminated;
     private int negativeCot;
@@ -64,15 +79,25 @@ final class ClientCommand implements ConnectionEventListener {
     /** File transfer ASDUs, for the file operation. */
     private final java.util.ArrayDeque<ASdu> fileEvents = new java.util.ArrayDeque<>();
 
+    /** asdus: where to record what arrives; the two connections of the redundancy operation share it. */
+    private ClientCommand(JsonArray asdus) {
+        this.asdus = asdus;
+    }
+
     @Override
     public synchronized void newASdu(Connection connection, ASdu asdu) {
-        asdus.add(Codec.asduJson(asdu));
+        synchronized (asdus) {
+            asdus.add(Codec.asduJson(asdu));
+        }
         asduCount++;
         ASduType type = asdu.getTypeIdentification();
-        if (type != null && type.getId() >= 120 && type.getId() <= 125) {
+        if (type != null && type.getId() >= 120 && type.getId() <= 126) {
             fileEvents.add(asdu);
         }
         int cot = asdu.getCauseOfTransmission().getId();
+        if (cot == 3) {
+            spontaneous++;
+        }
         if (expectType != null && type == expectType) {
             boolean unknown = cot >= 44 && cot <= 47;
             if (cot == 7 || cot == 9 || unknown) {
@@ -183,14 +208,6 @@ final class ClientCommand implements ConnectionEventListener {
         }
     }
 
-    private static int checksum(byte[] b, int from, int to) {
-        int sum = 0;
-        for (int i = from; i < to; i++) {
-            sum += b[i];
-        }
-        return sum & 0xFF;
-    }
-
     /** Select, call, receive and acknowledge one file. See docs/CONTAINER_CONTRACT.md. */
     private void download(Connection c, int ca, int ioa, int nof, int timeoutMs, Download d)
             throws Failure, IOException {
@@ -229,7 +246,7 @@ final class ClientCommand implements ConnectionEventListener {
                 }
                 // Last section: the checksum covers the whole file.
                 byte[] all = d.data.toByteArray();
-                boolean good = checksum(all, 0, all.length) == ((org.openmuc.j60870.ie.IeChecksum) e[3]).getValue()
+                boolean good = Codec.checksum(all, 0, all.length) == ((org.openmuc.j60870.ie.IeChecksum) e[3]).getValue()
                         && all.length == d.length;
                 c.ackFileOrSection(ca, ioa, name, (org.openmuc.j60870.ie.IeNameOfSection) e[1],
                         new org.openmuc.j60870.ie.IeAckFileOrSectionQualifier(good ? 1 : 2, 0));
@@ -264,7 +281,7 @@ final class ClientCommand implements ConnectionEventListener {
                     throw new Failure("failed", "expected a segment or last segment, got " + a.getTypeIdentification());
                 }
                 byte[] all = d.data.toByteArray();
-                boolean good = checksum(all, sectionStart, all.length) == ((org.openmuc.j60870.ie.IeChecksum) e[3])
+                boolean good = Codec.checksum(all, sectionStart, all.length) == ((org.openmuc.j60870.ie.IeChecksum) e[3])
                         .getValue() && all.length - sectionStart == sectionLength;
                 c.ackFileOrSection(ca, ioa, name, nos,
                         new org.openmuc.j60870.ie.IeAckFileOrSectionQualifier(good ? 3 : 4, 0));
@@ -273,6 +290,186 @@ final class ClientCommand implements ConnectionEventListener {
                 }
                 break;
             }
+        }
+    }
+
+    /** The reply to a step of an upload or to the call of the directory; a refusal ends the operation. */
+    private ASdu fileReply(int timeoutMs, String what) throws Failure {
+        ASdu a = nextFileEvent(timeoutMs, what);
+        int cot = a.getCauseOfTransmission().getId();
+        if (a.isNegativeConfirm() || (cot >= 44 && cot <= 47)) {
+            throw new Failure("negative-confirmation", "the station refused (" + a.getTypeIdentification() + ", cause "
+                    + cot + ")");
+        }
+        return a;
+    }
+
+    private void awaitCall(int scq, int nos, int timeoutMs) throws Failure {
+        String what = "F_SC_NA_1 with SCQ " + scq;
+        ASdu a = fileReply(timeoutMs, what);
+        if (a.getTypeIdentification() != ASduType.F_SC_NA_1) {
+            throw new Failure("failed", "expected " + what + ", got " + a.getTypeIdentification());
+        }
+        InformationElement[] e = a.getInformationObjects()[0].getInformationElements()[0];
+        if (((IeSelectAndCallQualifier) e[2]).getRequest() != scq || ((IeNameOfSection) e[1]).getValue() != nos) {
+            throw new Failure("failed", "expected " + what + " and NOS " + nos);
+        }
+    }
+
+    private void awaitAck(int afq, int timeoutMs) throws Failure {
+        String what = "F_AF_NA_1 with AFQ " + afq;
+        ASdu a = fileReply(timeoutMs, what);
+        if (a.getTypeIdentification() != ASduType.F_AF_NA_1) {
+            throw new Failure("failed", "expected " + what + ", got " + a.getTypeIdentification());
+        }
+        InformationElement[] e = a.getInformationObjects()[0].getInformationElements()[0];
+        int got = ((IeAckFileOrSectionQualifier) e[2]).getRequest();
+        if (got == 2 || got == 4) {
+            throw new Failure("negative-confirmation", "the station did not acknowledge (AFQ " + got + ")");
+        }
+        if (got != afq) {
+            throw new Failure("failed", "expected " + what + ", got AFQ " + got);
+        }
+    }
+
+    /** Announce one file and send it as the station calls it. See docs/CONTAINER_CONTRACT.md. */
+    private void upload(Connection c, int ca, int ioa, int nof, int size, int sectionSize, int timeoutMs, Download d)
+            throws Failure, IOException {
+        byte[] content = Codec.fixtureContent(ioa, size);
+        IeNameOfFile name = new IeNameOfFile(nof);
+        d.length = size;
+        c.fileReady(ca, ioa, name, new IeLengthOfFileOrSection(size), new IeFileReadyQualifier(0, false));
+        awaitCall(2, 0, timeoutMs);
+        int section = 0;
+        for (int from = 0; from < size; from += sectionSize) {
+            int to = Math.min(from + sectionSize, size);
+            section++;
+            IeNameOfSection nos = new IeNameOfSection(section);
+            c.sectionReady(ca, ioa, name, nos, new IeLengthOfFileOrSection(to - from),
+                    new IeSectionReadyQualifier(0, false));
+            awaitCall(6, section, timeoutMs);
+            d.sections++;
+            d.data.write(content, from, to - from);
+            for (int off = from; off < to; off += FileStation.MAX_SEGMENT) {
+                c.sendSegment(ca, ioa, name, nos,
+                        new IeFileSegment(content, off, Math.min(FileStation.MAX_SEGMENT, to - off)));
+            }
+            c.lastSectionOrSegment(ca, ioa, name, nos, new IeLastSectionOrSegmentQualifier(3),
+                    new IeChecksum(Codec.checksum(content, from, to)));
+            awaitAck(3, timeoutMs);
+        }
+        c.lastSectionOrSegment(ca, ioa, name, new IeNameOfSection(section), new IeLastSectionOrSegmentQualifier(1),
+                new IeChecksum(Codec.checksum(content, 0, size)));
+        awaitAck(1, timeoutMs);
+    }
+
+    /** Calls the directory and collects it up to the entry with the LFD bit. */
+    private void directory(Connection c, int ca, int timeoutMs, JsonArray out) throws Failure, IOException {
+        c.callOrSelectFiles(ca, CauseOfTransmission.REQUEST, 0, new IeNameOfFile(0), new IeNameOfSection(0),
+                new IeSelectAndCallQualifier(0, 0));
+        boolean last = false;
+        while (!last) {
+            ASdu a = fileReply(timeoutMs, "the entry of the directory with the LFD bit");
+            if (a.getTypeIdentification() != ASduType.F_DR_TA_1) {
+                throw new Failure("failed", "expected F_DR_TA_1, got " + a.getTypeIdentification());
+            }
+            for (InformationObject io : a.getInformationObjects()) {
+                InformationElement[][] rows = io.getInformationElements();
+                for (int i = 0; i < rows.length; i++) {
+                    int sof = Codec.statusOctet((IeStatusOfFile) rows[i][2]);
+                    JsonObject entry = new JsonObject();
+                    entry.addProperty("ioa", io.getInformationObjectAddress() + i);
+                    entry.addProperty("nof", ((IeNameOfFile) rows[i][0]).getValue());
+                    entry.addProperty("lof", ((IeLengthOfFileOrSection) rows[i][1]).getValue());
+                    entry.addProperty("sof", sof);
+                    out.add(entry);
+                    last |= (sof & Codec.LAST_FILE_OF_DIRECTORY) != 0;
+                }
+            }
+        }
+    }
+
+    private void interrogateStation(Connection c, int ca, int timeoutMs) throws Failure, IOException {
+        expect(ASduType.C_IC_NA_1);
+        c.interrogation(ca, CauseOfTransmission.ACTIVATION, new IeQualifierOfInterrogation(20));
+        awaitConfirmation(1, timeoutMs);
+        awaitTermination(timeoutMs);
+    }
+
+    /** What the redundancy operation found, for the result document. */
+    private static final class Redundancy {
+        final boolean takeover;
+        ApduTap primaryTap;
+        ApduTap standbyTap;
+        ClientCommand standby;
+        Connection standbyConnection;
+        /** Takeover: the I frames of the primary when the standby's STARTDT con arrived; before that, -1. */
+        int primaryEnd = -1;
+        boolean secondInterrogation;
+        boolean queuedEvent;
+
+        Redundancy(boolean takeover) {
+            this.takeover = takeover;
+        }
+
+        int primaryAsdus() {
+            return primaryTap == null ? 0 : primaryTap.startedFrames(primaryEnd);
+        }
+
+        int standbyAsdus() {
+            return standbyTap == null ? 0 : standbyTap.startedFrames(-1);
+        }
+
+        int strays() {
+            int all = (primaryTap == null ? 0 : primaryTap.frames()) + (standbyTap == null ? 0 : standbyTap.frames());
+            return all - primaryAsdus() - standbyAsdus();
+        }
+    }
+
+    /** Stops data transfer on a connection, as a step of the redundancy operation. */
+    private void stop(ExecutorService exec, Connection c, int timeoutMs, String which) throws Failure, IOException {
+        boolean confirmed;
+        try {
+            confirmed = uFrame(exec, c::stopDataTransfer, timeoutMs);
+        } catch (IOException | RuntimeException e) {
+            confirmed = false;
+        }
+        if (isClosed()) {
+            throw new Failure("connection-lost", "the " + which + " closed");
+        }
+        if (!confirmed) {
+            throw new Failure("stopdt-timeout", "no STOPDT con on the " + which);
+        }
+    }
+
+    /** Steps 2 to 7 of the redundancy operation, on the primary: see docs/CONTAINER_CONTRACT.md. */
+    private void redundancy(ExecutorService exec, Connection c, Redundancy rd, int ca, boolean tls, int timeoutMs)
+            throws Failure, IOException {
+        ClientCommand standby = rd.standby;
+        interrogateStation(c, ca, timeoutMs);
+        if (!rd.takeover) {
+            stop(exec, c, timeoutMs, "primary");
+        }
+        start(exec, rd.standbyConnection, standby, tls, timeoutMs);
+        if (rd.takeover) {
+            rd.primaryEnd = rd.primaryTap.frames();
+        } else if (isClosed()) {
+            throw new Failure("connection-lost", "the primary closed");
+        }
+        if (!rd.takeover) {
+            if (!standby.waitFor(() -> standby.spontaneous > 0, timeoutMs)) {
+                if (standby.isClosed()) {
+                    throw new Failure("connection-lost", "the standby closed while waiting for the queued event");
+                }
+                throw new Failure("timeout", "no event with cause 3 on the standby");
+            }
+            rd.queuedEvent = true;
+        }
+        rd.secondInterrogation = true;
+        standby.interrogateStation(rd.standbyConnection, ca, timeoutMs);
+        standby.stop(exec, rd.standbyConnection, timeoutMs, "standby");
+        if (rd.strays() > 0) {
+            throw new Failure("failed", rd.strays() + " I frames on a connection outside the time it was started");
         }
     }
 
@@ -425,7 +622,11 @@ final class ClientCommand implements ConnectionEventListener {
         boolean withTime = false;
         ProcessCommand command = null;
         int fileName = 1;
+        int fileSize = 0;
+        int sectionSize = 0;
         Download download = new Download();
+        JsonArray directory = new JsonArray();
+        Redundancy redundancy = null;
         switch (op) {
         case "connect":
             holdMs = args.integer("--hold-ms", 0);
@@ -470,6 +671,27 @@ final class ClientCommand implements ConnectionEventListener {
                 throw new Args.UsageException("file-get: --ioa is required; --name is 1..65535");
             }
             break;
+        case "file-put":
+            ioa = args.integer("--ioa", 0);
+            fileName = args.integer("--name", 1);
+            fileSize = args.integer("--size", 0);
+            sectionSize = args.integer("--section-size", fileSize);
+            if (ioa < 1 || fileName < 1 || fileName > 65535 || fileSize < 1 || fileSize > 65536 || sectionSize < 1
+                    || sectionSize > fileSize || (fileSize + sectionSize - 1) / sectionSize > 255) {
+                throw new Args.UsageException("file-put: --ioa and --size (1..65536) are required; --name is 1..65535;"
+                        + " --section-size is 1..--size, in at most 255 sections");
+            }
+            break;
+        case "file-dir":
+            break;
+        case "redundancy": {
+            String switchover = args.string("--switchover", "stopdt");
+            if (!switchover.equals("stopdt") && !switchover.equals("takeover")) {
+                throw new Args.UsageException("redundancy: --switchover must be stopdt or takeover");
+            }
+            redundancy = new Redundancy(switchover.equals("takeover"));
+            break;
+        }
         case "monitor":
             durationMs = args.integer("--duration-ms", 1000);
             maxAsdus = args.integer("--max-asdus", 0);
@@ -478,9 +700,10 @@ final class ClientCommand implements ConnectionEventListener {
             throw new Args.UsageException("client: unknown operation " + op);
         }
         Args.Apci apci = args.apci();
+        Tls tls = Tls.fromArgs(args);
         args.finish("client " + op);
 
-        ClientCommand state = new ClientCommand();
+        ClientCommand state = new ClientCommand(new JsonArray());
         long begin = System.currentTimeMillis();
         boolean connected = false;
         boolean startdt = false;
@@ -496,7 +719,7 @@ final class ClientCommand implements ConnectionEventListener {
 
         try {
             try {
-                con = new ClientConnectionBuilder(host)
+                ClientConnectionBuilder builder = new ClientConnectionBuilder(host)
                         .setPort(port)
                         .setConnectionTimeout(connectTimeoutMs)
                         .setMaxNumOfOutstandingIPdus(apci.k)
@@ -504,8 +727,22 @@ final class ClientCommand implements ConnectionEventListener {
                         .setMaxTimeNoAckReceived(apci.t1 * 1000)
                         .setMaxTimeNoAckSent(apci.t2 * 1000)
                         .setMaxIdleTime(apci.t3 * 1000)
-                        .setConnectionEventListener(state)
-                        .build();
+                        .setConnectionEventListener(state);
+                SocketFactory transport = tls != null ? tls.clientFactory() : SocketFactory.getDefault();
+                builder.setSocketFactory(transport);
+                if (redundancy != null) {
+                    redundancy.primaryTap = new ApduTap(transport);
+                    redundancy.standbyTap = new ApduTap(transport);
+                    redundancy.standby = new ClientCommand(state.asdus);
+                    builder.setSocketFactory(redundancy.primaryTap);
+                }
+                con = builder.build();
+                if (redundancy != null) {
+                    redundancy.standbyConnection = builder.setSocketFactory(redundancy.standbyTap)
+                            .setConnectionEventListener(redundancy.standby)
+                            .build();
+                    redundancy.standbyConnection.setOriginatorAddress(oa);
+                }
             } catch (IOException e) {
                 exitCode = Main.EXIT_CONNECT_FAILED;
                 throw new Failure("connect-failed", "cannot connect to the station: " + e.getMessage());
@@ -515,9 +752,7 @@ final class ClientCommand implements ConnectionEventListener {
 
             // startDataTransfer waits for the confirmation for up to t1; bound it by --timeout-ms instead.
             final Connection c = con;
-            if (!uFrame(exec, c::startDataTransfer, timeoutMs)) {
-                throw new Failure("startdt-timeout", "no STARTDT con from the station");
-            }
+            start(exec, c, state, tls != null, timeoutMs);
             startdt = true;
 
             final int fQoi = qoi;
@@ -594,6 +829,16 @@ final class ClientCommand implements ConnectionEventListener {
             case "file-get":
                 state.download(c, ca, fIoa, fileName, timeoutMs, download);
                 break;
+            case "file-put":
+                state.upload(c, ca, fIoa, fileName, fileSize, sectionSize, timeoutMs, download);
+                break;
+            case "file-dir":
+                state.directory(c, ca, timeoutMs, directory);
+                break;
+            case "redundancy":
+                state.redundancy(exec, c, redundancy, ca, tls != null, timeoutMs);
+                stopdt = true;
+                break;
             default: // monitor
                 state.waitFor(() -> fMax > 0 && state.asduCount >= fMax, durationMs);
                 if (state.isClosed()) {
@@ -611,8 +856,9 @@ final class ClientCommand implements ConnectionEventListener {
         } catch (IOException | RuntimeException e) {
             failure = new Failure(state.isClosed() ? "connection-lost" : "failed", String.valueOf(e.getMessage()));
         } finally {
-            if (con != null) {
-                con.close();
+            close(con);
+            if (redundancy != null) {
+                close(redundancy.standbyConnection);
             }
             exec.shutdownNow();
         }
@@ -632,10 +878,25 @@ final class ClientCommand implements ConnectionEventListener {
         }
         r.addProperty("connected", connected);
         r.addProperty("startdtConfirmed", startdt);
-        if (op.equals("connect")) {
+        if (tls != null) {
+            r.addProperty("tls", startdt);
+        }
+        if (op.equals("connect") || op.equals("redundancy")) {
             r.addProperty("stopdtConfirmed", stopdt);
         }
-        if (op.equals("file-get")) {
+        if (redundancy != null) {
+            JsonObject d = new JsonObject();
+            d.addProperty("switchover", redundancy.takeover ? "takeover" : "stopdt");
+            d.addProperty("primaryAsdus", redundancy.primaryAsdus());
+            d.addProperty("standbyAsdus", redundancy.standbyAsdus());
+            d.addProperty("strayAsdus", redundancy.strays());
+            d.addProperty("queuedEvent", redundancy.queuedEvent);
+            r.add("redundancy", d);
+        }
+        if (op.equals("file-dir")) {
+            r.add("directory", directory);
+        }
+        if (op.equals("file-get") || op.equals("file-put")) {
             byte[] data = download.data.toByteArray();
             JsonObject f = new JsonObject();
             f.addProperty("ioa", ioa);
@@ -643,25 +904,67 @@ final class ClientCommand implements ConnectionEventListener {
             f.addProperty("length", download.length);
             f.addProperty("received", data.length);
             f.addProperty("sections", download.sections);
-            StringBuilder hex = new StringBuilder();
-            try {
-                for (byte b : java.security.MessageDigest.getInstance("SHA-256").digest(data)) {
-                    hex.append(String.format("%02x", b));
-                }
-            } catch (java.security.NoSuchAlgorithmException e) {
-                throw new IllegalStateException(e);
-            }
-            f.addProperty("sha256", hex.toString());
+            f.addProperty("sha256", Codec.sha256Hex(data));
             r.add("file", f);
         }
+        JsonArray confirmations;
+        boolean terminated;
         synchronized (state) {
-            r.add("confirmations", state.confirmations.deepCopy());
-            r.addProperty("terminated", state.terminated);
+            confirmations = state.confirmations.deepCopy();
+            terminated = state.terminated;
+        }
+        if (redundancy != null && redundancy.standby != null) {
+            synchronized (redundancy.standby) {
+                confirmations.addAll(redundancy.standby.confirmations);
+                if (redundancy.secondInterrogation) {
+                    terminated = redundancy.standby.terminated;
+                }
+            }
+        }
+        r.add("confirmations", confirmations);
+        r.addProperty("terminated", terminated);
+        synchronized (state.asdus) {
             r.add("asdus", state.asdus.deepCopy());
         }
         r.addProperty("elapsedMs", System.currentTimeMillis() - begin);
         Main.emit(r);
         return exitCode;
+    }
+
+    /**
+     * Sends STARTDT and waits for the confirmation. With TLS the handshake is part of this (see Tls.clientFactory), and
+     * everything that goes wrong in it is the one error the contract has for it.
+     */
+    private static void start(ExecutorService exec, Connection c, ClientCommand state, boolean tls, int timeoutMs)
+            throws Failure, IOException {
+        boolean confirmed;
+        try {
+            confirmed = uFrame(exec, c::startDataTransfer, timeoutMs, () -> tls && state.isClosed());
+        } catch (IOException | RuntimeException e) {
+            if (tls) {
+                throw new Failure("tls-failed", "no TLS session with the station: " + e);
+            }
+            throw e;
+        }
+        if (!confirmed) {
+            throw tls ? new Failure("tls-failed", "no TLS session with the station that got as far as STARTDT con")
+                    : new Failure("startdt-timeout", "no STARTDT con from the station");
+        }
+    }
+
+    /** Closes without waiting long: closing a TLS socket whose handshake hangs is not bounded by anything else. */
+    private static void close(Connection c) {
+        if (c == null) {
+            return;
+        }
+        Thread t = new Thread(c::close, "close");
+        t.setDaemon(true);
+        t.start();
+        try {
+            t.join(1000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @FunctionalInterface
@@ -671,16 +974,30 @@ final class ClientCommand implements ConnectionEventListener {
 
     /** Runs a blocking STARTDT/STOPDT call with a deadline. Returns false when it was not confirmed in time. */
     private static boolean uFrame(ExecutorService exec, UFrame call, int timeoutMs) throws IOException {
+        return uFrame(exec, call, timeoutMs, () -> false);
+    }
+
+    /** The same, giving up as soon as abort holds. */
+    private static boolean uFrame(ExecutorService exec, UFrame call, int timeoutMs, BooleanSupplier abort)
+            throws IOException {
         Future<?> f = exec.submit(() -> {
             call.run();
             return null;
         });
+        long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
         try {
-            f.get(timeoutMs, TimeUnit.MILLISECONDS);
-            return true;
-        } catch (TimeoutException e) {
-            f.cancel(true);
-            return false;
+            while (true) {
+                long left = (deadline - System.nanoTime()) / 1_000_000L;
+                try {
+                    f.get(Math.max(0, Math.min(left, 50)), TimeUnit.MILLISECONDS);
+                    return true;
+                } catch (TimeoutException e) {
+                    if (left <= 50 || abort.getAsBoolean()) {
+                        f.cancel(true);
+                        return false;
+                    }
+                }
+            }
         } catch (ExecutionException e) {
             if (e.getCause() instanceof java.io.InterruptedIOException) {
                 return false;

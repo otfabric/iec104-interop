@@ -25,6 +25,8 @@ target_compile_definitions(iec104-interop PRIVATE
 target_compile_options(iec104-interop PRIVATE -Wall -Wextra -Werror)
 target_include_directories(iec104-interop PRIVATE
   ${LIB60870_PREFIX}/include/lib60870 ${CJSON_INCLUDE_DIRS})
+# See __wrap_TLSSocket_create in src/client.c.
+target_link_options(iec104-interop PRIVATE -Wl,--wrap=TLSSocket_create)
 target_link_libraries(iec104-interop PRIVATE
   ${LIB60870_PREFIX}/lib/liblib60870.a ${CJSON_LIBRARIES} Threads::Threads m)
 

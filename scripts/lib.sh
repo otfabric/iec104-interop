@@ -99,6 +99,7 @@ run_client() {
 #   rogue         a controlling station nobody trusts (self-signed)
 #   pin-station   self-signed controlled station, trusted by pin
 #   pin-scada     self-signed controlling station, trusted by pin
+#   other-ca      an authority that signed none of these
 # Mount <dir> read-only; the files are readable by the uid of the images.
 make_identities() {
     local dir="$1" n
@@ -120,6 +121,9 @@ make_identities() {
             -keyout "${dir}/${n}.key" -out "${dir}/${n}.pem" -subj "/CN=${n}" \
             -addext basicConstraints=critical,CA:FALSE 2>/dev/null || return 1
     done
+    openssl req -x509 -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 \
+        -keyout "${dir}/other-ca.key" -out "${dir}/other-ca.pem" -subj "/CN=iec104-interop other CA" \
+        -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign 2>/dev/null || return 1
     rm -f "${dir}"/*.csr
     chmod 644 "${dir}"/*
 }
@@ -127,15 +131,25 @@ make_identities() {
 # What two adapters must agree on: everything except who answered, how long it
 # took, the error message (for people, not part of the contract), the wall-clock
 # time tags and the NOS of the last-section F_LS_NA_1 (LSQ 1 or 2), which the
-# stacks fill differently (docs/FIXTURES.md).
+# stacks fill differently, repeated by the F_AF_NA_1 of an upload (AFQ 1 or 2),
+# and whether a directory is a sequence (docs/FIXTURES.md).
 # shellcheck disable=SC2034
 NORMALIZE='del(.adapter, .elapsedMs, .error.message) | (.asdus[]?.objects[]? |= del(.time))
-    | (.asdus[]? |= if .type == "F_LS_NA_1" then (.objects[]? |= if .lsq == 1 or .lsq == 2 then del(.nos) else . end) else . end)'
+    | (.asdus[]? |= if .type == "F_LS_NA_1" then (.objects[]? |= if .lsq == 1 or .lsq == 2 then del(.nos) else . end) else . end)
+    | (.asdus[]? |= if .type == "F_AF_NA_1" then (.objects[]? |= if (.afq % 16) == 1 or (.afq % 16) == 2 then del(.nos) else . end) else . end)
+    | (.asdus[]? |= if .type == "F_DR_TA_1" then del(.sequence) | (.objects[]? |= del(.timeInvalid)) else . end)'
 
 # One line that states the outcome of an operation; the expectation format of
 # tests/cases.tsv.
 # shellcheck disable=SC2034
 SUMMARY='"ok=\(.ok) error=\(.error.code // "-") conf=\([.confirmations[] | "\(.cot)\(if .negative then "n" else "" end)"] | join(",")) term=\(.terminated) asdus=\([.asdus[] | "\(.type // .typeId)/\(.cot)"] | join(","))"'
+
+# The same with what tests/feature-cases.tsv also states.
+# shellcheck disable=SC2034
+FEATURE_SUMMARY="${SUMMARY}"' + (if has("tls") then " tls=\(.tls)" else "" end)
+    + (if has("file") then " file=\(.file.length)/\(.file.received)/\(.file.sections)" else "" end)
+    + (if has("directory") then " directory=\([.directory[] | "\(.ioa):\(.nof):\(.lof):\(.sof)"] | join(","))" else "" end)
+    + (if has("redundancy") then " redundancy=\(.redundancy.primaryAsdus)/\(.redundancy.standbyAsdus)/\(.redundancy.strayAsdus)/\(.redundancy.queuedEvent)" else "" end)'
 
 KNOWN=0
 

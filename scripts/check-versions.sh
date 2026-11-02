@@ -19,6 +19,8 @@ arg() { sed -nE "s/^ARG $2=(.*)$/\1/p" "$1" | head -1; }
 need "lib60870 version"  "$(arg adapters/lib60870/Dockerfile LIB60870_VERSION)"
 need "lib60870 revision" "$(arg adapters/lib60870/Dockerfile LIB60870_SHA)"
 need "debian digest"     "$(arg adapters/lib60870/Dockerfile DEBIAN_DIGEST)"
+need "mbedtls version"   "mbedtls: \"$(arg adapters/lib60870/Dockerfile MBEDTLS_VERSION)\""
+need "mbedtls sha256"    "$(arg adapters/lib60870/Dockerfile MBEDTLS_SHA256)"
 need "maven digest"      "$(arg adapters/openmuc/Dockerfile MAVEN_DIGEST)"
 need "jre digest"        "$(arg adapters/openmuc/Dockerfile JRE_DIGEST)"
 need "j60870 version"    "version: \"$(arg adapters/openmuc/Dockerfile J60870_VERSION)\""

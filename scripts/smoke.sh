@@ -51,6 +51,8 @@ if [[ $(wc -l <<<"${caps}") -eq 1 ]]; then ok "print-capabilities is one line"; 
 # ---- the baked fixture is the repository's ----
 if diff -q <(docker run --rm "${IMAGE}" print-fixture baseline 2>/dev/null) "${ROOT}/fixtures/baseline/fixture.json" >/dev/null
 then ok "print-fixture baseline"; else fail "print-fixture baseline differs from fixtures/baseline/fixture.json"; fi
+if diff -q <(docker run --rm "${IMAGE}" print-fixture extended 2>/dev/null) "${ROOT}/fixtures/extended/fixture.json" >/dev/null
+then ok "print-fixture extended"; else fail "print-fixture extended differs from fixtures/extended/fixture.json"; fi
 expect_exit 1 "print-fixture of an unknown name" "${IMAGE}" print-fixture no-such-fixture
 
 # ---- usage errors never touch the network ----
@@ -62,12 +64,24 @@ expect_exit 2 "client with an unknown flag" "${IMAGE}" client interrogate --host
 expect_exit 2 "command without --value" "${IMAGE}" client command --host nowhere --type C_SC_NA_1 --ioa 500
 expect_exit 2 "command with a bad value" "${IMAGE}" client command --host nowhere --type C_SE_NB_1 --ioa 504 --value 99999
 expect_exit 2 "server with an unknown flag" "${IMAGE}" server --frobnicate
+expect_exit 2 "file-put without --size" "${IMAGE}" client file-put --host nowhere --ioa 31000
+expect_exit 2 "file-put without --ioa" "${IMAGE}" client file-put --host nowhere --size 100
+expect_exit 2 "file-put with a section larger than the file" "${IMAGE}" client file-put --host nowhere --ioa 31000 --size 100 --section-size 101
+expect_exit 2 "file-put with more sections than NOS can name" "${IMAGE}" client file-put --host nowhere --ioa 31000 --size 256 --section-size 1
+expect_exit 2 "redundancy with an unknown switchover" "${IMAGE}" client redundancy --host nowhere --switchover sideways
+expect_exit 2 "file-dir with a flag it does not have" "${IMAGE}" client file-dir --host nowhere --ioa 1
 expect_exit 2 "server with invalid APCI parameters" "${IMAGE}" server --k 4 --w 9
 # A security flag is unknown to an image without secureAuthentication; for
 # one with it, every flag needs --secure and --secure needs the identity.
 expect_exit 2 "server --secure without key material" "${IMAGE}" server --secure
 expect_exit 2 "client --mal without --secure" "${IMAGE}" client interrogate --host nowhere --mal 4
 expect_exit 2 "server --roles without --secure" "${IMAGE}" server --roles viewer
+
+# A TLS flag is unknown to an image without tls; for one with it, every flag
+# needs --tls and --tls needs the identity.
+expect_exit 2 "server --tls without key material" "${IMAGE}" server --tls
+expect_exit 2 "client --tls-cert without --tls" "${IMAGE}" client interrogate --host nowhere --tls-cert /no/such/file
+expect_exit 2 "server --tls-trust without --tls" "${IMAGE}" server --tls-trust /no/such/file
 
 # ---- an invalid fixture stops the server before it listens ----
 bad=$(mktemp -d)
@@ -77,6 +91,16 @@ jq '.commands[0].target = 300' "${ROOT}/fixtures/baseline/fixture.json" > "${bad
 chmod 644 "${bad}/fixture.json"
 expect_exit 4 "server with an invalid fixture" -v "${bad}:/bad:ro" "${IMAGE}" server --fixture /bad/fixture.json
 expect_exit 4 "server with a missing fixture" "${IMAGE}" server --fixture /no/such/fixture.json
+jq '.points[0].groups = [17]' "${ROOT}/fixtures/baseline/fixture.json" > "${bad}/fixture.json"
+expect_exit 4 "server with an interrogation group out of range" -v "${bad}:/bad:ro" "${IMAGE}" server --fixture /bad/fixture.json
+jq '(.points[] | select(.type == "M_IT_NA_1")).groups = [1]' "${ROOT}/fixtures/baseline/fixture.json" > "${bad}/fixture.json"
+expect_exit 4 "server with an integrated total in a group" -v "${bad}:/bad:ro" "${IMAGE}" server --fixture /bad/fixture.json
+jq '.uploads = [{"ioa": 30000, "name": 1, "maxSize": 100}]' "${ROOT}/fixtures/baseline/fixture.json" > "${bad}/fixture.json"
+expect_exit 4 "server with an upload on the address of a file" -v "${bad}:/bad:ro" "${IMAGE}" server --fixture /bad/fixture.json
+jq '.uploads = [{"ioa": 31000, "name": 1, "maxSize": 65537}]' "${ROOT}/fixtures/baseline/fixture.json" > "${bad}/fixture.json"
+expect_exit 4 "server with an upload that is too large" -v "${bad}:/bad:ro" "${IMAGE}" server --fixture /bad/fixture.json
+jq '(.points[] | select(.type == "M_BO_NA_1")).quality = ["CY"]' "${ROOT}/fixtures/baseline/fixture.json" > "${bad}/fixture.json"
+expect_exit 4 "server with a flag a bitstring cannot have" -v "${bad}:/bad:ro" "${IMAGE}" server --fixture /bad/fixture.json
 
 # ---- a connection that cannot be made ----
 doc=$(run_client "${ADAPTER}" interrogate --host "no-such-host-${RUN_ID}" --connect-timeout-ms 1500); CLIENT_EXIT=$?
@@ -151,6 +175,50 @@ if jq -e '.features.secureAuthentication == true' <<<"${caps}" >/dev/null 2>&1; 
     else
         fail "cannot make key material with openssl"
     fi
+fi
+
+# ---- tls: the ready event of a TLS server, and files that cannot be loaded ----
+if jq -e '.features.tlsServer == true or .features.tlsClient == true' <<<"${caps}" >/dev/null 2>&1; then
+    tlsdir=$(mktemp -d)
+    trap 'rm -rf "${bad}" "${tlsdir}" "${secrets:-}"; cleanup' EXIT
+    if make_identities "${tlsdir}"; then
+        DOCKER_ARGS=(-v "${tlsdir}:/secrets:ro")
+        if jq -e '.features.tlsServer == true' <<<"${caps}" >/dev/null 2>&1; then
+            name=$(start_server "${ADAPTER}" --tls --tls-cert /secrets/station.pem \
+                --tls-key /secrets/station.key --tls-trust /secrets/ca.pem)
+            if wait_ready "${name}"; then ok "TLS server becomes ready"; else fail "TLS server did not become ready"; fi
+            first=$(docker logs "${name}" 2>/dev/null | head -1)
+            if jq -e '.event == "ready" and .tls == true' <<<"${first}" >/dev/null 2>&1
+            then ok "ready event of a TLS server"; else fail "ready event without tls: ${first}"; fi
+            stop_server "${name}"
+            expect_exit 2 "server --tls with a key that is not a key" "${DOCKER_ARGS[@]}" "${IMAGE}" server \
+                --tls --tls-cert /secrets/station.pem --tls-key /secrets/station.pem --tls-trust /secrets/ca.pem
+        fi
+        if jq -e '.features.tlsClient == true' <<<"${caps}" >/dev/null 2>&1; then
+            expect_exit 2 "client --tls without a trust file" "${DOCKER_ARGS[@]}" "${IMAGE}" client interrogate \
+                --host nowhere --tls --tls-cert /secrets/scada.pem --tls-key /secrets/scada.key
+            expect_exit 2 "client --tls with a key that is not a key" "${DOCKER_ARGS[@]}" "${IMAGE}" client interrogate \
+                --host nowhere --tls --tls-cert /secrets/scada.pem --tls-key /secrets/scada.pem --tls-trust /secrets/ca.pem
+        fi
+        DOCKER_ARGS=()
+    else
+        fail "cannot make key material with openssl"
+    fi
+fi
+# The features must say the same as "tls".
+if jq -e '.features.tls == (.features.tlsServer and .features.tlsClient)' <<<"${caps}" >/dev/null 2>&1
+then ok "tls is tlsServer and tlsClient"; else fail "tls does not agree with tlsServer and tlsClient"; fi
+
+# ---- redundancy: the ready event, or an unknown flag ----
+if jq -e '.features.redundancyServer == true' <<<"${caps}" >/dev/null 2>&1; then
+    name=$(start_server "${ADAPTER}" --redundancy-group)
+    if wait_ready "${name}"; then ok "server with a redundancy group becomes ready"; else fail "server with a redundancy group did not become ready"; fi
+    first=$(docker logs "${name}" 2>/dev/null | head -1)
+    if jq -e '.event == "ready" and .redundancyGroup == true' <<<"${first}" >/dev/null 2>&1
+    then ok "ready event of a redundancy group"; else fail "ready event without redundancyGroup: ${first}"; fi
+    stop_server "${name}"
+else
+    expect_exit 2 "server --redundancy-group without the feature" "${IMAGE}" server --redundancy-group
 fi
 
 # ---- a port that is already taken ----

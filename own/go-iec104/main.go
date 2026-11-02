@@ -139,40 +139,45 @@ func capabilities() object {
 		},
 		"roles": map[string]bool{"server": true, "client": true},
 		"features": map[string]bool{
-			"generalInterrogation": true,
-			// The station refuses groups, as FIXTURES.md says of every station.
-			"groupInterrogation":   false,
-			"counterInterrogation": true,
-			"read":                 true,
-			"clockSync":            true,
-			"testCommand":          true,
-			"directCommands":       true,
-			"selectBeforeOperate":  true,
-			"commandDeactivation":  true,
-			"timeTaggedCommands":   true,
-			"spontaneousOnCommand": true,
-			"apciParameters":       true,
-			"multipleConnections":  true,
-			// The fixture format allows only what every adapter can serve.
-			"pointQualityOnBitstring": false,
-			// The library has TLS; the contract has no flags for it.
-			"tls":                  false,
-			"dataTransferEvents":   true,
-			"fileTransfer":         true,
-			"fileServer":           true,
-			"fileClient":           true,
-			"secureAuthentication": true,
+			"generalInterrogation":    true,
+			"groupInterrogation":      true,
+			"counterInterrogation":    true,
+			"read":                    true,
+			"clockSync":               true,
+			"testCommand":             true,
+			"directCommands":          true,
+			"selectBeforeOperate":     true,
+			"commandDeactivation":     true,
+			"timeTaggedCommands":      true,
+			"spontaneousOnCommand":    true,
+			"apciParameters":          true,
+			"multipleConnections":     true,
+			"pointQualityOnBitstring": true,
+			"tls":                     true,
+			"tlsServer":               true,
+			"tlsClient":               true,
+			"dataTransferEvents":      true,
+			"fileTransfer":            true,
+			"fileServer":              true,
+			"fileClient":              true,
+			"fileUploadServer":        true,
+			"fileUploadClient":        true,
+			"fileDirectoryServer":     true,
+			"fileDirectoryClient":     true,
+			"secureAuthentication":    true,
+			"redundancyServer":        true,
+			"redundancyClient":        true,
 		},
 		"pointTypes": []string{"M_SP_NA_1", "M_DP_NA_1", "M_ST_NA_1", "M_BO_NA_1", "M_ME_NA_1", "M_ME_NB_1",
 			"M_ME_NC_1", "M_IT_NA_1"},
 		"commandTypes": []string{"C_SC_NA_1", "C_DC_NA_1", "C_RC_NA_1", "C_SE_NA_1", "C_SE_NB_1", "C_SE_NC_1"},
 		"clientOperations": []string{"connect", "interrogate", "counter-interrogate", "read", "clock-sync",
-			"test-command", "command", "monitor", "file-get"},
+			"test-command", "command", "monitor", "file-get", "file-put", "file-dir", "redundancy"},
 	}
 }
 
 // switches take no value; every other flag does.
-var switches = map[string]bool{"secure": true, "with-time": true}
+var switches = map[string]bool{"secure": true, "tls": true, "with-time": true, "redundancy-group": true}
 
 // flags holds the flags of a command. A command takes what it needs and finish
 // refuses the rest: an unknown flag is a usage error, never ignored.

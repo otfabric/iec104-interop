@@ -48,6 +48,7 @@ typedef struct {
     bool transient;         /* M_ST_NA_1 */
     int sequence;           /* M_IT_NA_1 */
     uint8_t quality;        /* QDS bits; for M_IT_NA_1: CY 0x20, CA 0x40, IV 0x80 */
+    uint32_t groups;        /* interrogation groups: bit g - 1 for group g */
 } Point;
 
 typedef struct {
@@ -64,7 +65,17 @@ typedef struct {
     int name;        /* NOF */
     int size;        /* octets */
     int sectionSize; /* octets per section; the last one may be shorter */
+    /* Server: an entry of the catalog of files. */
+    int maxSize;         /* > 0: a place to upload to, this many octets at most */
+    bool stored;         /* an upload arrived; only then it can be fetched */
+    const uint8_t* data; /* the upload; NULL: the content rule of docs/FIXTURES.md */
 } FileSpec;
+
+typedef struct {
+    int ioa;
+    int name;    /* NOF */
+    int maxSize; /* octets */
+} UploadSpec;
 
 typedef struct {
     char name[64];
@@ -75,6 +86,8 @@ typedef struct {
     int commandCount;
     FileSpec* files;
     int fileCount;
+    UploadSpec* uploads;
+    int uploadCount;
 } Fixture;
 
 /* Octet i of the file at ioa: the content rule of docs/FIXTURES.md. */
@@ -131,6 +144,11 @@ const char* argUnknown(Args* a);
 
 /* Applies --k --w --t0 --t1 --t2 --t3 to params. Returns false on a bad value. */
 bool applyApciArgs(Args* a, CS104_APCIParameters params);
+
+/* Reads the transport security flags. False is a usage error: a flag without
+ * --tls, or a key or certificate that cannot be loaded. *out stays NULL without
+ * --tls. */
+bool tlsFromArgs(Args* a, TLSConfiguration* out);
 
 /* ---- commands ---- */
 

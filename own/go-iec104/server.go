@@ -3,10 +3,15 @@
 package main
 
 import (
+	"cmp"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"net"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -38,19 +43,75 @@ type station struct {
 	fx       *fixture
 	commands map[int]*command
 	sessions map[uint64]bool // data transfer started, by session
+	stored   map[asdu.IOA]*storedFile
+	arriving map[arrivalKey]*arrival
+
+	// --redundancy-group. Without it no event is ever queued, and the library's
+	// one group for every client means nothing: every connection is on its own.
+	group      bool
+	srv        *server.Server  // for the queue
+	active     *server.Session // the connection that has data transfer started
+	superseded map[uint64]bool // connections taken over, whose links are still started
+	pending    *asdu.ASDU      // the event, until a connection starts
+}
+
+// storedFile is an upload that arrived complete.
+type storedFile struct {
+	name uint16
+	data []byte
+}
+
+// storedSectionSize is the size of the sections of a stored file when it is
+// fetched, which FIXTURES.md leaves to the station. No stored file can have more
+// sections than the file transfer allows.
+const storedSectionSize = 2048
+
+// arrivalKey is a file on its way to the station: a session transfers one per
+// address.
+type arrivalKey struct {
+	session uint64
+	ioa     asdu.IOA
+}
+
+// arrival is what arrived of such a file, for the event. The library keeps that
+// to itself until the file is complete.
+type arrival struct {
+	name uint16
+	data []byte
 }
 
 func newStation(fx *fixture) *station {
 	st := &station{ca: asdu.CommonAddr(fx.Station.CommonAddress), fx: fx,
-		commands: map[int]*command{}, sessions: map[uint64]bool{}}
+		commands: map[int]*command{}, sessions: map[uint64]bool{},
+		stored: map[asdu.IOA]*storedFile{}, arriving: map[arrivalKey]*arrival{}, superseded: map[uint64]bool{}}
 	for _, c := range fx.Commands {
 		st.commands[c.IOA] = c
 	}
 	return st
 }
 
-// handler routes the requests the fixture format knows.
+// handler answers the requests the fixture format knows.
 func (st *station) handler() server.Handler {
+	mux := st.mux()
+	if !st.group {
+		return mux
+	}
+	// The library takes queued events off a connection that was taken over, and
+	// leaves its link started: answering it is up to the handler.
+	return server.HandlerFunc(func(s *server.Session, req *asdu.ASDU) {
+		st.mu.Lock()
+		superseded := st.superseded[s.ID()]
+		st.mu.Unlock()
+		if superseded {
+			logf("%s was taken over: ignoring %s", s.RemoteAddr(), req.Type)
+			return
+		}
+		mux.HandleASDU(s, req)
+	})
+}
+
+// mux routes the requests.
+func (st *station) mux() *server.Mux {
 	mux := server.NewMux()
 	mux.HandleFunc(asdu.C_IC_NA_1, one(st.interrogation))
 	mux.HandleFunc(asdu.C_CI_NA_1, one(st.counterInterrogation))
@@ -61,22 +122,33 @@ func (st *station) handler() server.Handler {
 		asdu.C_SC_TA_1, asdu.C_DC_TA_1, asdu.C_RC_TA_1, asdu.C_SE_TA_1, asdu.C_SE_TB_1, asdu.C_SE_TC_1} {
 		mux.HandleFunc(t, one(st.command))
 	}
+	// Two file servers, because OnDone does not say which way a file went: this
+	// one for what the station sends, and the directory.
 	files := server.NewFileServer(server.FileSourceFunc(st.openFile))
+	files.Directory = st.directory
 	files.OnDone = func(_ *server.Session, _ asdu.CommonAddr, ioa asdu.IOA, name uint16, err error) {
 		e := event("file-transfer")
 		e["ioa"], e["name"], e["success"] = int(ioa), int(name), err == nil
 		emit(e)
 	}
-	// Only the monitor direction: the contract has no upload and no directory.
-	fileRequest := one(func(s *server.Session, req *asdu.ASDU) {
-		if req.Cause != asdu.CauseFileTransfer {
-			_ = s.Reject(req, asdu.CauseUnknownCause)
-			return
-		}
-		files.HandleASDU(s, st.own(req))
-	})
+	fileRequest := one(func(s *server.Session, req *asdu.ASDU) { files.HandleASDU(s, st.own(req)) })
 	mux.HandleFunc(asdu.F_SC_NA_1, fileRequest)
 	mux.HandleFunc(asdu.F_AF_NA_1, fileRequest)
+	// And this one for what it takes.
+	uploads := server.NewFileServer(nil)
+	uploads.Sink = st
+	uploads.OnDone = func(s *server.Session, _ asdu.CommonAddr, ioa asdu.IOA, _ uint16, err error) {
+		st.fileReceived(arrivalKey{s.ID(), ioa}, err == nil)
+	}
+	fileUpload := one(func(s *server.Session, req *asdu.ASDU) {
+		if seg, ok := req.First().(asdu.FileSegment); ok {
+			st.segment(arrivalKey{s.ID(), seg.IOA}, seg)
+		}
+		uploads.HandleASDU(s, st.own(req))
+	})
+	for _, t := range []asdu.TypeID{asdu.F_FR_NA_1, asdu.F_SR_NA_1, asdu.F_SG_NA_1, asdu.F_LS_NA_1} {
+		mux.HandleFunc(t, fileUpload)
+	}
 	return mux
 }
 
@@ -110,10 +182,29 @@ func (st *station) onState(s *server.Session, state iec104.State, _ error) {
 	st.mu.Lock()
 	started, known := st.sessions[s.ID()]
 	st.sessions[s.ID()] = state == iec104.StateStarted
+	var queued *asdu.ASDU
+	if st.group {
+		queued = st.follow(s, state, started)
+	}
+	var cut []arrivalKey
 	if state == iec104.StateDisconnected {
 		delete(st.sessions, s.ID())
+		for key := range st.arriving {
+			if key.session == s.ID() {
+				cut = append(cut, key)
+			}
+		}
 	}
 	st.mu.Unlock()
+	if queued != nil {
+		if err := st.srv.Enqueue(queued); err != nil {
+			logf("cannot queue the event: %v", err)
+		}
+	}
+	// The library says nothing of a transfer that ends with its session.
+	for _, key := range cut {
+		st.fileReceived(key, false)
+	}
 	name := ""
 	switch {
 	case state == iec104.StateDisconnected:
@@ -132,6 +223,68 @@ func (st *station) onState(s *server.Session, state iec104.State, _ error) {
 	emit(e)
 }
 
+// follow keeps track of the group, and returns the event to hand to the library
+// now. A connection in STARTDT that gets a STOPDT act queues the event; a takeover
+// queues nothing, and neither does a connection that ends. The caller holds the
+// mutex.
+//
+// Each session reports on a goroutine of its own, so the STARTDT of one connection
+// can be reported before the STOPDT of the other that came first on the wire. Its
+// link knows better, which tells a takeover from that.
+//
+// The event waits here, and not in the library's queue, for a connection to start:
+// when the started connection stops, the library hands its queue to any other whose
+// link is started, and that includes one that was taken over (server/redundancy.go,
+// handOver).
+func (st *station) follow(s *server.Session, state iec104.State, wasStarted bool) *asdu.ASDU {
+	id := s.ID()
+	switch state {
+	case iec104.StateStarted:
+		if st.active != nil && st.active != s && st.active.Started() {
+			st.superseded[st.active.ID()] = true
+		}
+		st.active = s
+		delete(st.superseded, id)
+		pending := st.pending
+		st.pending = nil
+		return pending
+	case iec104.StateStopped:
+		if !wasStarted {
+			return nil
+		}
+		superseded := st.superseded[id]
+		delete(st.superseded, id)
+		if st.active == s {
+			st.active = nil
+		}
+		if superseded {
+			return nil
+		}
+		if st.active != nil {
+			return st.queuedEvent()
+		}
+		st.pending = st.queuedEvent()
+	case iec104.StateDisconnected:
+		delete(st.superseded, id)
+		if st.active == s {
+			st.active = nil
+		}
+	}
+	return nil
+}
+
+// queuedEvent is the event of a redundancy group: the single point with the lowest
+// address, as it is now. The points are in ascending address order. The caller
+// holds the mutex.
+func (st *station) queuedEvent() *asdu.ASDU {
+	for _, p := range st.fx.Points {
+		if p.Type == "M_SP_NA_1" {
+			return asdu.New(asdu.CauseSpontaneous, st.ca, p.object(asdu.Timestamp{}))
+		}
+	}
+	return nil
+}
+
 // send transmits an ASDU on the session; the end of the session is not worth a
 // message.
 func send(s *server.Session, a *asdu.ASDU) {
@@ -140,15 +293,15 @@ func send(s *server.Session, a *asdu.ASDU) {
 	}
 }
 
-// answer sends the integrated totals or everything else, in ascending address
-// order, consecutive points of one type sharing an ASDU.
-func (st *station) answer(s *server.Session, cause asdu.Cause, originator uint8, counters bool) {
+// answer sends the points chosen, in ascending address order, consecutive points
+// of one type sharing an ASDU.
+func (st *station) answer(s *server.Session, cause asdu.Cause, originator uint8, chosen func(*point) bool) {
 	var out []*asdu.ASDU
 	var cur *asdu.ASDU
 	last := ""
 	st.mu.Lock()
 	for _, p := range st.fx.Points {
-		if (p.Type == "M_IT_NA_1") != counters {
+		if !chosen(p) {
 			continue
 		}
 		if cur == nil || p.Type != last || len(cur.Objects) >= objectsPerASDU {
@@ -166,13 +319,29 @@ func (st *station) answer(s *server.Session, cause asdu.Cause, originator uint8,
 	}
 }
 
+// interrogated says which points answer a QOI: every point that is not an
+// integrated total for the station, the points of a group for QOI 21..36, and
+// nothing for any other QOI.
+func interrogated(qoi asdu.QOI) func(*point) bool {
+	switch {
+	case qoi == asdu.QOIStation:
+		return func(p *point) bool { return p.Type != "M_IT_NA_1" }
+	case qoi >= asdu.QOIGroup1 && qoi <= asdu.QOIGroup16:
+		group := int(qoi - asdu.QOIStation)
+		return func(p *point) bool { return slices.Contains(p.Groups, group) }
+	}
+	return func(*point) bool { return false }
+}
+
 func (st *station) interrogation(s *server.Session, req *asdu.ASDU) {
 	if req.Cause != asdu.CauseActivation {
 		_ = s.Reject(req, asdu.CauseUnknownCause)
 		return
 	}
 	qoi := req.First().(asdu.Interrogation).Qualifier
-	accepted := qoi == asdu.QOIStation
+	chosen := interrogated(qoi)
+	// A group without a point has no group to serve.
+	accepted := qoi == asdu.QOIStation || slices.ContainsFunc(st.fx.Points, chosen)
 	e := event("interrogation")
 	e["commonAddress"], e["qoi"], e["accepted"] = int(req.CommonAddr), int(qoi), accepted
 	emit(e)
@@ -182,7 +351,7 @@ func (st *station) interrogation(s *server.Session, req *asdu.ASDU) {
 		return
 	}
 	_ = s.Confirm(own)
-	st.answer(s, qoi.Cause(), req.Originator, false)
+	st.answer(s, qoi.Cause(), req.Originator, chosen)
 	_ = s.Terminate(own)
 }
 
@@ -202,7 +371,7 @@ func (st *station) counterInterrogation(s *server.Session, req *asdu.ASDU) {
 		return
 	}
 	_ = s.Confirm(own)
-	st.answer(s, ci.Cause(), req.Originator, true)
+	st.answer(s, ci.Cause(), req.Originator, func(p *point) bool { return p.Type == "M_IT_NA_1" })
 	_ = s.Terminate(own)
 }
 
@@ -332,12 +501,86 @@ func (st *station) command(s *server.Session, raw *asdu.ASDU) {
 }
 
 func (st *station) openFile(_ *server.Session, _ asdu.CommonAddr, ioa asdu.IOA, name uint16) (server.File, bool) {
+	st.mu.Lock()
+	stored := st.stored[ioa]
+	st.mu.Unlock()
+	if stored != nil && stored.name == name {
+		return server.NewFile(stored.data, storedSectionSize), true
+	}
 	for _, f := range st.fx.Files {
 		if asdu.IOA(f.IOA) == ioa && uint16(f.Name) == name {
 			return server.NewFile(f.content(), f.SectionSize), true
 		}
 	}
 	return server.File{}, false
+}
+
+// AcceptFile says whether an upload has a place: the address and name of an entry
+// of the fixture, and a length it takes.
+func (st *station) AcceptFile(s *server.Session, _ asdu.CommonAddr, ioa asdu.IOA, name uint16, length int) bool {
+	for _, u := range st.fx.Uploads {
+		if asdu.IOA(u.IOA) == ioa && uint16(u.Name) == name && length >= 1 && length <= u.MaxSize {
+			st.mu.Lock()
+			st.arriving[arrivalKey{s.ID(), ioa}] = &arrival{name: name}
+			st.mu.Unlock()
+			return true
+		}
+	}
+	return false
+}
+
+// StoreFile keeps a file that arrived complete, in place of any earlier one.
+func (st *station) StoreFile(_ *server.Session, _ asdu.CommonAddr, ioa asdu.IOA, name uint16, file server.File) error {
+	data := make([]byte, 0, file.Len())
+	for _, section := range file.Sections {
+		data = append(data, section...)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.stored[ioa] = &storedFile{name: name, data: data}
+	return nil
+}
+
+// segment notes what arrived, for the event. The handler of the session runs one
+// ASDU at a time, so nothing else touches this arrival.
+func (st *station) segment(key arrivalKey, seg asdu.FileSegment) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if a := st.arriving[key]; a != nil && a.name == seg.Name {
+		a.data = append(a.data, seg.Data...)
+	}
+}
+
+// fileReceived ends an arrival with its event.
+func (st *station) fileReceived(key arrivalKey, success bool) {
+	st.mu.Lock()
+	a := st.arriving[key]
+	delete(st.arriving, key)
+	st.mu.Unlock()
+	if a == nil {
+		return
+	}
+	sum := sha256.Sum256(a.data)
+	e := event("file-received")
+	e["ioa"], e["name"], e["length"], e["sha256"], e["success"] = int(key.ioa), int(a.name), len(a.data), hex.EncodeToString(sum[:]), success
+	emit(e)
+}
+
+// directory lists the files of the fixture and the stored uploads, in ascending
+// address order. The library marks the last one.
+func (st *station) directory(*server.Session, asdu.CommonAddr, asdu.IOA) []asdu.FileDirectoryEntry {
+	now := asdu.Now()
+	var entries []asdu.FileDirectoryEntry
+	for _, f := range st.fx.Files {
+		entries = append(entries, asdu.FileDirectoryEntry{IOA: asdu.IOA(f.IOA), Name: uint16(f.Name), Length: uint32(f.Size), Time: now})
+	}
+	st.mu.Lock()
+	for ioa, f := range st.stored {
+		entries = append(entries, asdu.FileDirectoryEntry{IOA: ioa, Name: f.name, Length: uint32(len(f.data)), Time: now})
+	}
+	st.mu.Unlock()
+	slices.SortFunc(entries, func(a, b asdu.FileDirectoryEntry) int { return cmp.Compare(a.IOA, b.IOA) })
+	return entries
 }
 
 // listen opens the listener of a station and starts serving on it.
@@ -348,6 +591,7 @@ func (st *station) serve(ln net.Listener, opts ...server.Option) (*server.Server
 	if err != nil {
 		return nil, nil, err
 	}
+	st.srv = srv
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ln) }()
 	return srv, served, nil
@@ -361,6 +605,11 @@ func runServer(f *flags) int {
 	params := f.apci()
 	secure := f.security()
 	f.accessRoles(secure)
+	group := f.has("redundancy-group")
+	transport := f.transport()
+	if secure != nil && transport != nil {
+		f.fail("--tls with --secure is not in the contract")
+	}
 	if err := f.finish(); err != nil {
 		return usage(err.Error())
 	}
@@ -371,6 +620,7 @@ func runServer(f *flags) int {
 		return exitInvalidFixture
 	}
 	st := newStation(fx)
+	st.group = group
 	opts := []server.Option{server.WithParams(params)}
 	if secure != nil {
 		if _, err := secure.endpoint(sec.Controlled, st.ca, 0); err != nil {
@@ -389,6 +639,11 @@ func runServer(f *flags) int {
 		logf("cannot listen on %s: %v", address, err)
 		return exitFailed
 	}
+	if transport != nil {
+		// Serve takes the listener as it is; the library shakes hands with each
+		// connection, within t0, before it becomes a session.
+		ln = tls.NewListener(ln, transport.server())
+	}
 	srv, served, err := st.serve(ln, opts...)
 	if err != nil {
 		_ = ln.Close()
@@ -402,6 +657,12 @@ func runServer(f *flags) int {
 	ready["adapter"], ready["address"], ready["fixture"], ready["commonAddress"] = adapterName, address, fx.Name, fx.Station.CommonAddress
 	if secure != nil {
 		ready["secure"] = true
+	}
+	if transport != nil {
+		ready["tls"] = true
+	}
+	if group {
+		ready["redundancyGroup"] = true
 	}
 	emit(ready)
 	if err := os.WriteFile(readyFile, []byte("ready\n"), 0o644); err != nil {

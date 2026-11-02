@@ -4,10 +4,12 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -28,10 +30,13 @@ const (
 
 // station is the controlled station of the contract, driven by a fixture.
 type station struct {
-	mu    sync.Mutex // guards the point values and selections of fx
-	fx    *fixture
-	ca    uint16
-	files map[int]*iec.FileServer // by information object address
+	mu      sync.Mutex // guards the point values and selections and the files of fx, and files
+	fx      *fixture
+	ca      uint16
+	files   map[int]*iec.FileServer // by information object address
+	uploads map[int]*upload         // by information object address
+	dir     *iec.FileServer         // the call of the directory
+	group   *redundancyGroup        // with --redundancy-group
 }
 
 // conn is one connection: its link and, with --secure, its association.
@@ -50,6 +55,7 @@ func runServer(a *args) (int, error) {
 	fixturePath := a.str("--fixture", defaultFixture)
 	bind := a.str("--bind-address", "0.0.0.0")
 	readyFile := a.str("--ready-file", defaultReadyFile)
+	grouped := a.flag("--redundancy-group")
 	port, err := a.num("--port", 2404)
 	if err != nil {
 		return 0, err
@@ -63,6 +69,10 @@ func runServer(a *args) (int, error) {
 		return 0, err
 	}
 	if err := a.roleFlags(security); err != nil {
+		return 0, err
+	}
+	tlsConfig, err := a.tlsFlags(security != nil)
+	if err != nil {
 		return 0, err
 	}
 	if err := a.finish("server"); err != nil {
@@ -79,9 +89,17 @@ func runServer(a *args) (int, error) {
 	}
 	_ = os.Remove(readyFile)
 
-	st := &station{fx: fx, ca: uint16(fx.Station.CommonAddr), files: map[int]*iec.FileServer{}}
+	st := &station{fx: fx, ca: uint16(fx.Station.CommonAddr), files: map[int]*iec.FileServer{},
+		uploads: map[int]*upload{}}
 	for _, f := range fx.Files {
 		st.files[f.IOA] = st.fileServer(f)
+	}
+	st.dir = &iec.FileServer{Store: stationFiles{st}}
+	if grouped {
+		st.group = &redundancyGroup{}
+	}
+	for _, u := range fx.Uploads {
+		st.uploads[u.IOA] = &upload{spec: u, srv: &iec.FileServer{Store: stationFiles{st}, SegmentSize: 236}}
 	}
 
 	ln, err := net.Listen("tcp", net.JoinHostPort(bind, strconv.Itoa(port)))
@@ -91,12 +109,72 @@ func runServer(a *args) (int, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	// The connections of a redundancy group are one association (TS 7.3.2).
+	var groupLink *sec.SecureLink
+	if grouped && security != nil {
+		if groupLink, err = security.link(false, st.ca); err != nil {
+			logf("security: %v", err)
+			return exitOperationFailed, nil
+		}
+		go groupLink.Run(ctx)
+	}
 
 	var (
-		mu    sync.Mutex
-		conns = map[*conn]struct{}{}
-		wg    sync.WaitGroup
+		mu       sync.Mutex
+		stopping bool
+		conns    = map[*conn]struct{}{}
+		wg       sync.WaitGroup
 	)
+	// serve runs one connection; with --tls, nc is the TLS session.
+	serve := func(nc net.Conn) {
+		c := &conn{peer: nc.RemoteAddr().String()}
+		lcfg := cfg
+		if security != nil {
+			c.sl = groupLink
+			if c.sl == nil {
+				var err error
+				if c.sl, err = security.link(false, st.ca); err != nil {
+					logf("security: %v", err)
+					_ = nc.Close()
+					return
+				}
+			}
+			lcfg.Security = c.sl
+		}
+		mu.Lock()
+		if stopping || len(conns) >= maxConnections {
+			mu.Unlock()
+			logf("refusing %s: %d connections are open", c.peer, maxConnections)
+			_ = nc.Close()
+			return
+		}
+		conns[c] = struct{}{}
+		wg.Add(1)
+		mu.Unlock()
+		cctx, ccancel := context.WithCancel(ctx)
+		if c.sl != nil && groupLink == nil {
+			go c.sl.Run(cctx)
+		}
+		e := event("connection-opened")
+		e["peer"] = c.peer
+		emit(e)
+		c.link = cs104.Accept(cctx, nc, lcfg, func(l *cs104.Link) { st.started(c, l) }, nil)
+		go func() {
+			defer wg.Done()
+			defer ccancel()
+			for raw := range c.link.ASDUs() {
+				st.handle(cctx, c, raw)
+			}
+			<-c.link.Done()
+			c.watch.Wait()
+			mu.Lock()
+			delete(conns, c)
+			mu.Unlock()
+			e := event("connection-closed")
+			e["peer"] = c.peer
+			emit(e)
+		}()
+	}
 	acceptErr := make(chan error, 1)
 	go func() {
 		for {
@@ -105,50 +183,22 @@ func runServer(a *args) (int, error) {
 				acceptErr <- err
 				return
 			}
-			mu.Lock()
-			full := len(conns) >= maxConnections
-			mu.Unlock()
-			if full {
-				logf("refusing %s: %d connections are open", nc.RemoteAddr(), maxConnections)
-				_ = nc.Close()
+			if tlsConfig == nil {
+				serve(nc)
 				continue
 			}
-			c := &conn{peer: nc.RemoteAddr().String()}
-			lcfg := cfg
-			if security != nil {
-				if c.sl, err = security.link(false, st.ca); err != nil {
-					logf("security: %v", err)
-					_ = nc.Close()
-					continue
-				}
-				lcfg.Security = c.sl
-			}
-			cctx, ccancel := context.WithCancel(ctx)
-			if c.sl != nil {
-				go c.sl.Run(cctx)
-			}
-			e := event("connection-opened")
-			e["peer"] = c.peer
-			emit(e)
-			c.link = cs104.Accept(cctx, nc, lcfg, func(l *cs104.Link) { st.started(c, l) }, nil)
-			mu.Lock()
-			conns[c] = struct{}{}
-			mu.Unlock()
-			wg.Add(1)
+			// A station with --tls accepts nothing but TLS: only a session
+			// is a connection of the contract. t0 bounds the handshake.
 			go func() {
-				defer wg.Done()
-				defer ccancel()
-				for raw := range c.link.ASDUs() {
-					st.handle(cctx, c, raw)
+				hctx, hcancel := context.WithTimeout(ctx, cfg.T0)
+				defer hcancel()
+				tc := tls.Server(nc, tlsConfig)
+				if err := tc.HandshakeContext(hctx); err != nil {
+					logf("no TLS session with %s: %v", nc.RemoteAddr(), err)
+					_ = nc.Close()
+					return
 				}
-				<-c.link.Done()
-				c.watch.Wait()
-				mu.Lock()
-				delete(conns, c)
-				mu.Unlock()
-				e := event("connection-closed")
-				e["peer"] = c.peer
-				emit(e)
+				serve(tc)
 			}()
 		}
 	}()
@@ -167,6 +217,12 @@ func runServer(a *args) (int, error) {
 	if security != nil {
 		ready["secure"] = true
 	}
+	if tlsConfig != nil {
+		ready["tls"] = true
+	}
+	if grouped {
+		ready["redundancyGroup"] = true
+	}
 	emit(ready)
 
 	select {
@@ -177,11 +233,11 @@ func runServer(a *args) (int, error) {
 	}
 	_ = os.Remove(readyFile)
 	_ = ln.Close()
+	// Every link and handshake runs under ctx.
 	mu.Lock()
-	for c := range conns {
-		c.link.Close()
-	}
+	stopping = true
 	mu.Unlock()
+	cancel()
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
 	select {
@@ -199,6 +255,7 @@ func (s *station) started(c *conn, l *cs104.Link) {
 	e := event("data-transfer-started")
 	e["peer"] = c.peer
 	emit(e)
+	s.linkStarted(l)
 	c.watch.Add(1)
 	go func() {
 		defer c.watch.Done()
@@ -208,6 +265,7 @@ func (s *station) started(c *conn, l *cs104.Link) {
 			// A link that ends stays "started"; one stopped just before
 			// it ended is still reported.
 			if !l.Started() {
+				s.linkStopped(l)
 				e := event("data-transfer-stopped")
 				e["peer"] = c.peer
 				emit(e)
@@ -260,14 +318,14 @@ func (s *station) pointASDU(pts []*point, timed bool, cause iec.Cause, oa uint8)
 	return a
 }
 
-// sendPoints sends the integrated totals (counters) or everything else, in
-// ascending address order, consecutive points of one type sharing an ASDU.
-func (s *station) sendPoints(ctx context.Context, c *conn, cause iec.Cause, oa uint8, counters bool) {
+// sendPoints sends the points selected, in ascending address order,
+// consecutive points of one type sharing an ASDU.
+func (s *station) sendPoints(ctx context.Context, c *conn, cause iec.Cause, oa uint8, selected func(*point) bool) {
 	var out []*iec.ASDU
 	var batch []*point
 	s.mu.Lock()
 	for _, p := range s.fx.Points {
-		if (p.typ == iec.MItNa1) != counters {
+		if !selected(p) {
 			continue
 		}
 		if len(batch) > 0 && (p.typ != batch[0].typ || len(batch) >= maxObjects) {
@@ -320,13 +378,19 @@ func (s *station) handle(ctx context.Context, c *conn, raw []byte) {
 			return
 		}
 		qoi := int(a.Objects[0].Value)
-		accepted := qoi == 20
+		group := qoi - 20
+		accepted := qoi == 20 || group >= 1 && group <= 16 && s.fx.hasGroup(group)
 		e := event("interrogation")
 		e["commonAddress"], e["qoi"], e["accepted"] = int(a.CA), qoi, accepted
 		emit(e)
 		reply(iec.CauseActCon, !accepted)
 		if accepted {
-			s.sendPoints(ctx, c, iec.CauseInterrogated, a.Orig, false)
+			s.sendPoints(ctx, c, iec.Cause(qoi), a.Orig, func(p *point) bool {
+				if group == 0 {
+					return p.typ != iec.MItNa1
+				}
+				return slices.Contains(p.Groups, group)
+			})
 			reply(iec.CauseActTerm, false)
 		}
 	case iec.CCiNa1:
@@ -342,7 +406,7 @@ func (s *station) handle(ctx context.Context, c *conn, raw []byte) {
 		emit(e)
 		reply(iec.CauseActCon, !accepted)
 		if accepted {
-			s.sendPoints(ctx, c, iec.CauseCounterGen, a.Orig, true)
+			s.sendPoints(ctx, c, iec.CauseCounterGen, a.Orig, func(p *point) bool { return p.typ == iec.MItNa1 })
 			reply(iec.CauseActTerm, false)
 		}
 	case iec.CRdNa1:
@@ -389,6 +453,12 @@ func (s *station) handle(ctx context.Context, c *conn, raw []byte) {
 		s.command(ctx, c, raw, a)
 	case iec.FScNa1, iec.FAfNa1:
 		s.file(ctx, c, raw, a)
+	case iec.FFrNa1, iec.FSrNa1, iec.FSgNa1, iec.FLsNa1:
+		if a.Cause != iec.CauseFile || len(a.Objects) != 1 {
+			reject(iec.CauseUnknownCause)
+			return
+		}
+		s.receive(ctx, c, raw, a)
 	default:
 		reject(iec.CauseUnknownType)
 	}
@@ -501,6 +571,14 @@ func fileEvent(f *fileSpec, success bool) {
 // procedure is the library's.
 func (s *station) file(ctx context.Context, c *conn, raw []byte, a *iec.ASDU) {
 	reject := func(cause iec.Cause) { c.send(ctx, mirror(raw, cause, true, a.CA)) }
+	answer := func(answer *iec.ASDU) {
+		answer.CA = s.ca
+		c.sendASDU(ctx, answer)
+	}
+	if a.Type == iec.FScNa1 && a.Cause == iec.CauseRequest && len(a.Objects) == 1 {
+		s.dir.Handle(ctx, a, answer) // the call of the directory
+		return
+	}
 	if a.Cause != iec.CauseFile {
 		reject(iec.CauseUnknownCause)
 		return
@@ -510,7 +588,10 @@ func (s *station) file(ctx context.Context, c *conn, raw []byte, a *iec.ASDU) {
 		return
 	}
 	o := a.Objects[0]
+	s.mu.Lock()
 	f := s.fx.file(int(o.IOA))
+	srv := s.files[int(o.IOA)]
+	s.mu.Unlock()
 	if f == nil || int(o.File) != f.Name {
 		// A deactivation ends a transfer, and there is none of an unknown
 		// file: it is not answered, like the library's own file server does
@@ -531,10 +612,7 @@ func (s *station) file(ctx context.Context, c *conn, raw []byte, a *iec.ASDU) {
 		a.Type == iec.FScNa1 && o.Qualifier&0x0f == iec.SCQDeactivateFile:
 		fileEvent(f, false)
 	}
-	s.files[f.IOA].Handle(ctx, a, func(answer *iec.ASDU) {
-		answer.CA = s.ca
-		c.sendASDU(ctx, answer)
-	})
+	srv.Handle(ctx, a, answer)
 }
 
 // fileStore serves the content of one file of the fixture.

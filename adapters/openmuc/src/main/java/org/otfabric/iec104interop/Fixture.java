@@ -38,6 +38,8 @@ final class Fixture {
         boolean transientState;
         int sequence;
         Set<String> quality = Set.of();
+        /** Interrogation groups, 1..16. */
+        Set<Integer> groups = Set.of();
     }
 
     static final class Command {
@@ -47,6 +49,28 @@ final class Fixture {
         int reportCause = 11;
         boolean selectRequired;
         boolean selected;
+    }
+
+    /** A file of the station: see docs/FIXTURES.md. */
+    static final class FileSpec {
+        int ioa;
+        int name;
+        int size;
+        int sectionSize;
+        /** What an upload stored; null for a file of the fixture. */
+        byte[] stored;
+
+        /** Octet i of a file of the fixture is (i + ioa) mod 251. */
+        byte[] content() {
+            return stored != null ? stored : Codec.fixtureContent(ioa, size);
+        }
+    }
+
+    /** Where a controlling station may send a file: see docs/FIXTURES.md. */
+    static final class Upload {
+        int ioa;
+        int name;
+        int maxSize;
     }
 
     static final Map<ASduType, ASduType> COMMAND_TARGET = Map.of(
@@ -66,6 +90,8 @@ final class Fixture {
     /** Sorted by address. */
     final List<Point> points = new ArrayList<>();
     final List<Command> commands = new ArrayList<>();
+    final List<FileSpec> files = new ArrayList<>();
+    final List<Upload> uploads = new ArrayList<>();
 
     Point point(int ioa) {
         for (Point p : points) {
@@ -80,6 +106,15 @@ final class Fixture {
         for (Command c : commands) {
             if (c.ioa == ioa) {
                 return c;
+            }
+        }
+        return null;
+    }
+
+    Upload upload(int ioa) {
+        for (Upload u : uploads) {
+            if (u.ioa == ioa) {
+                return u;
             }
         }
         return null;
@@ -178,8 +213,6 @@ final class Fixture {
                 break;
             case M_BO_NA_1:
                 valid = inRange(v, 0, 4294967295.0);
-                // Kept empty for every adapter: lib60870 cannot set it.
-                allowed = Set.of();
                 break;
             case M_ME_NA_1:
             case M_ME_NB_1:
@@ -225,6 +258,19 @@ final class Fixture {
                     flags.add(f.getAsString());
                 }
                 p.quality = flags;
+            }
+            if (o.has("groups")) {
+                JsonElement g = o.get("groups");
+                if (p.type == ASduType.M_IT_NA_1 || !g.isJsonArray()) {
+                    throw new InvalidException("point " + p.ioa + ": groups is an array, and not of M_IT_NA_1");
+                }
+                Set<Integer> groups = new java.util.TreeSet<>();
+                for (JsonElement n : (JsonArray) g) {
+                    if (!inRange(n, 1, 16) || !groups.add(n.getAsInt())) {
+                        throw new InvalidException("point " + p.ioa + ": groups are unique and 1..16");
+                    }
+                }
+                p.groups = groups;
             }
             fx.points.add(p);
         }
@@ -274,8 +320,6 @@ final class Fixture {
             }
         }
 
-        // Files are validated like everywhere else, although this adapter's
-        // server does not serve them (capability fileServer is false).
         JsonElement files = root.get("files");
         if (files != null) {
             if (!files.isJsonArray()) {
@@ -294,6 +338,37 @@ final class Fixture {
                 if (!seen.add(ioa) || fx.point(ioa) != null || fx.command(ioa) != null) {
                     throw new InvalidException("file " + ioa + ": duplicate information object address");
                 }
+                FileSpec f = new FileSpec();
+                f.ioa = ioa;
+                f.name = o.get("name").getAsInt();
+                f.size = o.get("size").getAsInt();
+                f.sectionSize = o.get("sectionSize").getAsInt();
+                fx.files.add(f);
+            }
+            fx.files.sort(Comparator.comparingInt(f -> f.ioa));
+        }
+
+        JsonElement uploads = root.get("uploads");
+        if (uploads != null) {
+            if (!uploads.isJsonArray()) {
+                throw new InvalidException("uploads must be an array");
+            }
+            for (JsonElement item : uploads.getAsJsonArray()) {
+                JsonObject o = item.isJsonObject() ? item.getAsJsonObject() : new JsonObject();
+                if (!inRange(o.get("ioa"), 1, 0xFFFFFF) || !inRange(o.get("name"), 1, 255)
+                        || !inRange(o.get("maxSize"), 1, 65536)) {
+                    throw new InvalidException("upload " + fx.uploads.size()
+                            + ": needs ioa, name (1..255) and maxSize (1..65536)");
+                }
+                Upload u = new Upload();
+                u.ioa = o.get("ioa").getAsInt();
+                u.name = o.get("name").getAsInt();
+                u.maxSize = o.get("maxSize").getAsInt();
+                if (fx.point(u.ioa) != null || fx.command(u.ioa) != null || fx.upload(u.ioa) != null
+                        || fx.files.stream().anyMatch(f -> f.ioa == u.ioa)) {
+                    throw new InvalidException("upload " + u.ioa + ": duplicate information object address");
+                }
+                fx.uploads.add(u);
             }
         }
         return fx;

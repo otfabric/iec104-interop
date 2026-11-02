@@ -30,6 +30,10 @@
     "files": {
       "type": "array",
       "items": { "$ref": "#/$defs/file" }
+    },
+    "uploads": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/upload" }
     }
   },
   "$defs": {
@@ -46,6 +50,11 @@
         "value": { "type": ["boolean", "number"] },
         "transient": { "type": "boolean" },
         "sequence": { "type": "integer", "minimum": 0, "maximum": 31 },
+        "groups": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1, "maximum": 16 }
+        },
         "quality": {
           "type": "array",
           "uniqueItems": true,
@@ -60,7 +69,7 @@
         { "if": { "properties": { "type": { "const": "M_ST_NA_1" } } },
           "then": { "properties": { "value": { "type": "integer", "minimum": -64, "maximum": 63 }, "quality": { "items": { "enum": ["OV", "BL", "SB", "NT", "IV"] } } } } },
         { "if": { "properties": { "type": { "const": "M_BO_NA_1" } } },
-          "then": { "properties": { "value": { "type": "integer", "minimum": 0, "maximum": 4294967295 }, "quality": { "maxItems": 0 } } } },
+          "then": { "properties": { "value": { "type": "integer", "minimum": 0, "maximum": 4294967295 }, "quality": { "items": { "enum": ["OV", "BL", "SB", "NT", "IV"] } } } } },
         { "if": { "properties": { "type": { "enum": ["M_ME_NA_1", "M_ME_NB_1"] } } },
           "then": { "properties": { "value": { "type": "integer", "minimum": -32768, "maximum": 32767 }, "quality": { "items": { "enum": ["OV", "BL", "SB", "NT", "IV"] } } } } },
         { "if": { "properties": { "type": { "const": "M_ME_NC_1" } } },
@@ -70,8 +79,20 @@
         { "if": { "not": { "properties": { "type": { "const": "M_ST_NA_1" } } } },
           "then": { "not": { "required": ["transient"] } } },
         { "if": { "not": { "properties": { "type": { "const": "M_IT_NA_1" } } } },
-          "then": { "not": { "required": ["sequence"] } } }
+          "then": { "not": { "required": ["sequence"] } } },
+        { "if": { "properties": { "type": { "const": "M_IT_NA_1" } } },
+          "then": { "not": { "required": ["groups"] } } }
       ]
+    },
+    "upload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ioa", "name", "maxSize"],
+      "properties": {
+        "ioa": { "$ref": "#/$defs/ioa" },
+        "name": { "type": "integer", "minimum": 1, "maximum": 255 },
+        "maxSize": { "type": "integer", "minimum": 1, "maximum": 65536 }
+      }
     },
     "file": {
       "type": "object",

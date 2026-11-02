@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,9 @@ import (
 	"github.com/otfabric/go-iec104/sec"
 )
 
+// maxFileSections is how many sections Client.PutFile sends.
+const maxFileSections = 254
+
 // The counter of the test command, the same in every adapter, since the self-tests
 // compare the result documents of all pairings.
 const testCounter = 0x4938
@@ -27,7 +31,8 @@ const testCounter = 0x4938
 // The controlling station of the contract: one bounded operation per invocation.
 // It sends with Client.Send and judges what comes back itself, since the contract
 // wants to see more than the request methods say (every ASDU, and a confirmation
-// as it arrives). The file transfer is the library's procedure, Client.GetFile.
+// as it arrives). The file transfer is the library's procedure, Client.GetFile,
+// Client.PutFile and Client.ListFiles.
 
 // failure is a failed operation: it becomes the error object of the result.
 type failure struct{ code, message string }
@@ -55,6 +60,10 @@ type session struct {
 	fileLength   int
 	fileSections int
 	fileData     []byte
+	// file-put: the sections of the file, which the station calls
+	putSections [][]byte
+	// file-dir
+	directory []object
 }
 
 func (s *session) update(f func()) {
@@ -123,7 +132,17 @@ func (s *session) HandleASDU(a *asdu.ASDU) {
 		if a.Negative || refusal(a.Cause) {
 			return
 		}
+		for _, o := range a.Objects {
+			if e, ok := o.(asdu.FileDirectoryEntry); ok {
+				s.directory = append(s.directory, object{"ioa": int(e.IOA), "nof": int(e.Name), "lof": int(e.Length), "sof": int(e.Status)})
+			}
+		}
 		switch o := a.First().(type) {
+		case asdu.FileCall:
+			if n := int(o.Section); o.Qualifier&0x0f == asdu.SectionRequest && n >= 1 && n <= len(s.putSections) {
+				s.fileSections++
+				s.fileData = append(s.fileData, s.putSections[n-1]...)
+			}
 		case asdu.FileReady:
 			if o.Qualifier&asdu.FileNegative == 0 {
 				s.fileLength = int(o.Length)
@@ -145,6 +164,7 @@ type peer struct {
 	ca      asdu.CommonAddr
 	oa      uint8
 	timeout time.Duration
+	overTLS bool
 }
 
 func (p *peer) send(cause asdu.Cause, obj asdu.InformationObject) error {
@@ -184,11 +204,15 @@ func (p *peer) termination() error {
 
 // activate sends an activation that ends in a termination.
 func (p *peer) activate(obj asdu.InformationObject) error {
-	p.expect(asdu.TypeOf(obj))
+	var n int
+	p.update(func() {
+		p.expectType, p.terminated = asdu.TypeOf(obj), false
+		n = len(p.confirmations) + 1
+	})
 	if err := p.send(asdu.CauseActivation, obj); err != nil {
 		return err
 	}
-	if err := p.confirmation(1); err != nil {
+	if err := p.confirmation(n); err != nil {
 		return err
 	}
 	return p.termination()
@@ -224,6 +248,20 @@ func (p *peer) read(ioa asdu.IOA) error {
 	return nil
 }
 
+func (p *peer) startDT(ctx context.Context) error {
+	if err := p.client.StartDT(ctx); err != nil {
+		switch {
+		case p.overTLS:
+			// With TLS 1.3 a client learns only here that its certificate was refused.
+			return failf("tls-failed", "no STARTDT con over the TLS session: %v", err)
+		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, iec104.ErrTimeout):
+			return failf("startdt-timeout", "no STARTDT con from the station")
+		}
+		return failf("connection-lost", "the connection closed while waiting for STARTDT con: %v", err)
+	}
+	return nil
+}
+
 func (p *peer) stopDT() error {
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
 	defer cancel()
@@ -236,7 +274,7 @@ func (p *peer) stopDT() error {
 	return nil
 }
 
-// fileError says what a failed Client.GetFile means.
+// fileError says what a failed file transfer or call of the directory means.
 func (p *peer) fileError(err error) error {
 	var negative *iec104.NegativeError
 	switch {
@@ -412,9 +450,87 @@ func parseOperation(op string, f *flags) (func(*peer) error, *int, *int) {
 			}
 			return nil
 		}, &ioa, &name
+	case "file-put":
+		ioa := f.required("ioa", 1, 0xFFFFFF)
+		name := f.integer("name", 1, 1, 65535)
+		size := f.required("size", 1, 65536)
+		sectionSize := f.integer("section-size", size, 1, max(size, 1))
+		var sections [][]byte
+		for rest := fileContent(ioa, size); len(rest) > 0; rest = rest[min(sectionSize, len(rest)):] {
+			sections = append(sections, rest[:min(sectionSize, len(rest))])
+		}
+		if len(sections) > maxFileSections {
+			// The name of a section is one octet; the library goes up to this.
+			f.fail("--size %d in sections of %d is more than %d sections", size, sectionSize, maxFileSections)
+		}
+		return func(p *peer) error {
+			p.update(func() { p.fileLength, p.putSections = size, sections })
+			if err := p.client.PutFile(context.Background(), p.ca, asdu.IOA(ioa), uint16(name), sections...); err != nil {
+				return p.fileError(err)
+			}
+			return nil
+		}, &ioa, &name
+	case "file-dir":
+		return func(p *peer) error {
+			if _, err := p.client.ListFiles(context.Background(), p.ca, 0); err != nil {
+				return p.fileError(err)
+			}
+			return nil
+		}, nil, nil
 	}
 	f.fail("unknown operation %s", op)
 	return nil, nil, nil
+}
+
+// reachDialer says when the TCP connection stands, which is where a station that
+// cannot be reached ends and what TLS can get wrong begins.
+type reachDialer struct {
+	net.Dialer
+	reached func()
+}
+
+func (d *reachDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	conn, err := d.Dialer.DialContext(ctx, network, address)
+	if err == nil {
+		d.reached()
+	}
+	return conn, err
+}
+
+// connection is one connection of an operation, not yet established.
+type connection struct {
+	client  *client.Client
+	reached bool
+	ctx     context.Context
+	overTLS bool
+}
+
+// The dial has --connect-timeout-ms and the handshake --timeout-ms.
+func newConnection(address string, connectTimeout, timeout time.Duration, overTLS bool, options []client.Option) (*connection, error) {
+	ctx, stop := context.WithCancel(context.Background())
+	cn := &connection{ctx: ctx, overTLS: overTLS}
+	var err error
+	cn.client, err = client.New(address, append(options, client.WithDialer(&reachDialer{
+		Dialer: net.Dialer{Timeout: connectTimeout},
+		reached: func() {
+			cn.reached = true
+			time.AfterFunc(timeout, stop)
+		}}))...)
+	if err != nil {
+		stop()
+		return nil, err
+	}
+	return cn, nil
+}
+
+func (cn *connection) establish() error {
+	if err := cn.client.Connect(cn.ctx); err != nil {
+		if cn.overTLS && cn.reached {
+			return failf("tls-failed", "no TLS session with the station: %v", err)
+		}
+		return failf("connect-failed", "cannot connect to the station: %v", err)
+	}
+	return nil
 }
 
 // secure waits for the association the endpoint runs once data transfer started.
@@ -456,21 +572,27 @@ func runClient(op string, f *flags) int {
 	params := f.apci()
 	secure := f.security()
 	f.algorithms(secure)
-	operation, fileIOA, fileName := parseOperation(op, f)
+	transport := f.transport()
+	if secure != nil && transport != nil {
+		f.fail("--tls with --secure is not in the contract")
+	}
+	s := &session{changed: make(chan struct{})}
+	var operation func(*peer) error
+	var fileIOA, fileName *int
+	var rd *redundancy
+	if op == "redundancy" {
+		rd = parseRedundancy(f, s)
+		operation = func(p *peer) error { return rd.run(p, func() { s.sleep(collect) }) }
+	} else {
+		operation, fileIOA, fileName = parseOperation(op, f)
+	}
 	if err := f.finish(); err != nil {
 		return usage(err.Error())
 	}
 
-	s := &session{changed: make(chan struct{})}
 	options := []client.Option{
-		client.WithParams(params), client.WithOriginator(oa), client.WithHandler(s),
+		client.WithParams(params), client.WithOriginator(oa),
 		client.WithAutoStart(false), client.WithRequestTimeout(timeout),
-		client.WithDialer(&net.Dialer{Timeout: connectTimeout}),
-		client.WithStateHandler(func(state iec104.State, _ error) {
-			if state == iec104.StateDisconnected {
-				s.update(func() { s.closed = true })
-			}
-		}),
 	}
 	var ep *sec.Endpoint
 	if secure != nil {
@@ -480,30 +602,57 @@ func runClient(op string, f *flags) int {
 		}
 		options = append(options, client.WithSecurity(ep))
 	}
-	c, err := client.New(net.JoinHostPort(host, strconv.Itoa(port)), options...)
+	if transport != nil {
+		options = append(options, client.WithTLS(transport.client()))
+	}
+	open := func(h client.Handler, onState func(iec104.State, error)) (*connection, error) {
+		return newConnection(net.JoinHostPort(host, strconv.Itoa(port)), connectTimeout, timeout, transport != nil,
+			append(slices.Clip(options), client.WithHandler(h), client.WithStateHandler(onState)))
+	}
+
+	var handler client.Handler = s
+	onState := func(state iec104.State, _ error) {
+		if state == iec104.StateDisconnected {
+			s.update(func() { s.closed = true })
+		}
+	}
+	if rd != nil {
+		handler, onState = rd, rd.primaryState
+	}
+	first, err := open(handler, onState)
 	if err != nil {
 		return usage(err.Error())
 	}
-	p := &peer{session: s, client: c, ca: ca, oa: oa, timeout: timeout}
-
-	var connected, started, stopped, secured bool
-	exit := exitFailed
-	err = func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
-		defer cancel()
-		if err := c.Connect(ctx); err != nil {
-			exit = exitConnect
-			return failf("connect-failed", "cannot connect to the station: %v", err)
+	c := first.client
+	p := &peer{session: s, client: c, ca: ca, oa: oa, timeout: timeout, overTLS: transport != nil}
+	var second *connection
+	if rd != nil {
+		if second, err = open(standbyHandler{rd}, rd.standbyState); err != nil {
+			return usage(err.Error())
 		}
-		connected = true
+		standby := *p
+		standby.client = second.client
+		rd.standby = &standby
+		rd.closeBoth = func() {
+			_ = second.client.Close()
+			_ = c.Close()
+		}
+	}
 
-		ctx, cancel = context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-		if err := c.StartDT(ctx); err != nil {
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, iec104.ErrTimeout) {
-				return failf("startdt-timeout", "no STARTDT con from the station")
+	var started, stopped, secured bool
+	err = func() error {
+		if err := first.establish(); err != nil {
+			return err
+		}
+		if second != nil {
+			if err := second.establish(); err != nil {
+				return err
 			}
-			return failf("connection-lost", "the connection closed while waiting for STARTDT con: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		if err := p.startDT(ctx); err != nil {
+			return err
 		}
 		started = true
 
@@ -518,13 +667,16 @@ func runClient(op string, f *flags) int {
 		}
 		stopped = op == "connect"
 		s.sleep(collect)
-		exit = exitOK
 		return nil
 	}()
 	// When Close returns, the handler has seen everything that was received.
+	if second != nil {
+		_ = second.client.Close()
+	}
 	_ = c.Close()
 
 	r := object{"schemaVersion": schemaVersion, "adapter": adapterName, "operation": op, "ok": err == nil, "error": nil}
+	exit := exitOK
 	if err != nil {
 		var f *failure
 		if !errors.As(err, &f) {
@@ -535,21 +687,34 @@ func runClient(op string, f *flags) int {
 			f = &failure{code, strings.TrimSpace(err.Error())}
 		}
 		r["error"] = object{"code": f.code, "message": f.message}
+		exit = exitFailed
+		if f.code == "connect-failed" {
+			exit = exitConnect
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	r["connected"], r["startdtConfirmed"] = connected, started
+	r["connected"], r["startdtConfirmed"] = first.reached, started
 	if op == "connect" {
 		r["stopdtConfirmed"] = stopped
+	}
+	if rd != nil {
+		r["stopdtConfirmed"], r["redundancy"] = rd.stopped, rd.result()
 	}
 	if secure != nil {
 		r["secured"] = secured
 	}
+	if transport != nil {
+		r["tls"] = started
+	}
 	r["confirmations"], r["terminated"] = append([]object{}, s.confirmations...), s.terminated
-	if op == "file-get" {
+	if op == "file-get" || op == "file-put" {
 		sum := sha256.Sum256(s.fileData)
 		r["file"] = object{"ioa": *fileIOA, "name": *fileName, "length": s.fileLength, "received": len(s.fileData),
 			"sections": s.fileSections, "sha256": hex.EncodeToString(sum[:])}
+	}
+	if op == "file-dir" {
+		r["directory"] = append([]object{}, s.directory...)
 	}
 	r["asdus"] = append([]object{}, s.asdus...)
 	r["elapsedMs"] = time.Since(begin).Milliseconds()

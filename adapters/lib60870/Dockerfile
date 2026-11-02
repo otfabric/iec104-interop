@@ -6,6 +6,7 @@
 # lib60870-C is GPL-3.0. The adapter links it statically, so the adapter binary
 # and this image are distributed under GPL-3.0 as well; see
 # THIRD_PARTY_NOTICES.md. Upstream pins are mirrored in versions.yaml.
+# Mbed TLS is compiled into the library: it is what lib60870-C has for TLS.
 
 # Where the base images come from. They are pinned by digest, so a mirror of
 # Docker Hub serves exactly the same images; CI uses one to stay clear of
@@ -21,10 +22,14 @@ FROM ${BASE_REGISTRY}/debian:trixie-slim@${DEBIAN_DIGEST} AS lib60870-build
 ARG LIB60870_REPO=https://github.com/mz-automation/lib60870.git
 ARG LIB60870_VERSION=v2.4.1
 ARG LIB60870_SHA=7a388e3e133999e1ca77ba7521d55d074b7cd2bc
+ARG MBEDTLS_VERSION=3.6.7
+ARG MBEDTLS_SHA256=a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+      bzip2 \
       ca-certificates \
       cmake \
+      curl \
       g++ \
       gcc \
       git \
@@ -40,6 +45,23 @@ RUN git init -q . \
     && git fetch -q --depth 1 origin "${LIB60870_SHA}" \
     && git checkout -q --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${LIB60870_SHA}"
+
+# The release tarball, not the tag: it has the generated sources. lib60870-C's
+# cmake finds it in dependencies/ by its name and builds it into the library.
+# Upstream's src/hal/tls/mbedtls3/mbedtls_config.h is never read, since a quoted
+# include finds the one next to Mbed TLS's build_info.h first, so Mbed TLS's own
+# default configuration applies. That one has no threading, and a station runs
+# one thread per connection over the global state of PSA: switch it on.
+WORKDIR /src/lib60870/lib60870-C/dependencies
+RUN curl -fsSL --retry 5 --retry-all-errors -o mbedtls.tar.bz2 \
+      "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-${MBEDTLS_VERSION}/mbedtls-${MBEDTLS_VERSION}.tar.bz2" \
+    && echo "${MBEDTLS_SHA256}  mbedtls.tar.bz2" | sha256sum -c - \
+    && tar xjf mbedtls.tar.bz2 \
+    && rm mbedtls.tar.bz2 \
+    && cp "mbedtls-${MBEDTLS_VERSION}/LICENSE" /src/mbedtls-LICENSE \
+    && sed -i -E 's|^//(#define MBEDTLS_THREADING_(C\|PTHREAD))$|\1|' \
+      "mbedtls-${MBEDTLS_VERSION}/include/mbedtls/mbedtls_config.h" \
+    && test "$(grep -cE '^#define MBEDTLS_THREADING_(C|PTHREAD)$' "mbedtls-${MBEDTLS_VERSION}/include/mbedtls/mbedtls_config.h")" = 2
 
 WORKDIR /src/lib60870/lib60870-C/build
 RUN cmake .. \
@@ -96,6 +118,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=adapter-build /src/adapter/build/iec104-interop /usr/local/bin/iec104-interop
 COPY --from=lib60870-build /src/lib60870/COPYING /licenses/lib60870/COPYING
+COPY --from=lib60870-build /src/mbedtls-LICENSE /licenses/mbedtls/LICENSE
 COPY THIRD_PARTY_NOTICES.md /licenses/THIRD_PARTY_NOTICES.md
 COPY fixtures /fixtures
 

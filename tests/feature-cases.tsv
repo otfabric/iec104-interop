@@ -1,0 +1,58 @@
+# Self-test cases of what needs more than the baseline fixture, for
+# scripts/interop.sh.
+#
+# Columns, separated by tabs:
+#   1  id      stable dotted scenario id of results.json; never change it
+#   2  state   "ro": servers with the same flags are shared by the cases;
+#              "rw": the case gets a freshly started server
+#   3  exit    expected exit code of the client
+#   4  summary as in tests/cases.tsv, followed by what the result document says
+#              beyond it: " tls=", " file=length/received/sections",
+#              " directory=ioa:nof:lof:sof,..." and " redundancy=primary ASDUs/standby
+#              ASDUs/stray ASDUs/queued event"
+#   5  needs   as in tests/cases.tsv
+#   6  server flags, or "-"
+#   7  operation and its flags, as passed to "client"
+#
+# scripts/lib.sh (make_identities) makes the key material; it is mounted at
+# /secrets. "@ext" stands for --fixture /fixtures/extended/fixture.json and
+# "@tls-NAME" for --tls --tls-cert /secrets/NAME.pem --tls-key /secrets/NAME.key.
+#
+# Interrogation groups.
+feature.group.station	ro	0	ok=true error=- conf=7 term=true asdus=C_IC_NA_1/7,M_SP_NA_1/20,M_DP_NA_1/20,M_BO_NA_1/20,M_ME_NB_1/20,M_ME_NC_1/20,C_IC_NA_1/10	server:pointQualityOnBitstring	@ext	interrogate
+feature.group.1	ro	0	ok=true error=- conf=7 term=true asdus=C_IC_NA_1/7,M_SP_NA_1/21,M_DP_NA_1/21,C_IC_NA_1/10	server:groupInterrogation,client:groupInterrogation	@ext	interrogate --qoi 21
+feature.group.2	ro	0	ok=true error=- conf=7 term=true asdus=C_IC_NA_1/7,M_BO_NA_1/22,C_IC_NA_1/10	server:groupInterrogation,client:groupInterrogation,server:pointQualityOnBitstring	@ext	interrogate --qoi 22
+feature.group.3	ro	0	ok=true error=- conf=7 term=true asdus=C_IC_NA_1/7,M_BO_NA_1/23,M_ME_NB_1/23,C_IC_NA_1/10	server:groupInterrogation,client:groupInterrogation,server:pointQualityOnBitstring	@ext	interrogate --qoi 23
+feature.group.16	ro	0	ok=true error=- conf=7 term=true asdus=C_IC_NA_1/7,M_ME_NB_1/36,C_IC_NA_1/10	server:groupInterrogation,client:groupInterrogation	@ext	interrogate --qoi 36
+feature.group.empty	ro	1	ok=false error=negative-confirmation conf=7n term=false asdus=C_IC_NA_1/7	server:groupInterrogation,client:groupInterrogation	@ext	interrogate --qoi 30
+feature.group.broadcast	ro	0	ok=true error=- conf=7 term=true asdus=C_IC_NA_1/7,M_SP_NA_1/21,M_DP_NA_1/21,C_IC_NA_1/10	server:groupInterrogation,client:groupInterrogation	@ext	interrogate --qoi 21 --common-address 65535
+feature.group.unknown-station	ro	1	ok=false error=negative-confirmation conf=46n term=false asdus=C_IC_NA_1/46	server:groupInterrogation,client:groupInterrogation	@ext	interrogate --qoi 21 --common-address 7
+feature.quality.read-good	ro	0	ok=true error=- conf= term=false asdus=M_BO_NA_1/5	server:pointQualityOnBitstring	@ext	read --ioa 103
+feature.quality.read-flags	ro	0	ok=true error=- conf= term=false asdus=M_BO_NA_1/5	server:pointQualityOnBitstring	@ext	read --ioa 104
+# Transport security: mutual TLS.
+feature.tls.counter-interrogate	ro	0	ok=true error=- conf=7 term=true asdus=C_CI_NA_1/7,M_IT_NA_1/37,C_CI_NA_1/10 tls=true	server:tlsServer,client:tlsClient	@ext @tls-station --tls-trust /secrets/ca.pem	counter-interrogate @tls-scada --tls-trust /secrets/ca.pem
+feature.tls.group	ro	0	ok=true error=- conf=7 term=true asdus=C_IC_NA_1/7,M_SP_NA_1/21,M_DP_NA_1/21,C_IC_NA_1/10 tls=true	server:tlsServer,client:tlsClient,server:groupInterrogation,client:groupInterrogation	@ext @tls-station --tls-trust /secrets/ca.pem	interrogate --qoi 21 @tls-scada --tls-trust /secrets/ca.pem
+feature.tls.command	rw	0	ok=true error=- conf=7 term=true asdus=C_SC_NA_1/7,M_SP_TB_1/11,C_SC_NA_1/10 tls=true	server:tlsServer,client:tlsClient	@ext @tls-station --tls-trust /secrets/ca.pem	command --type C_SC_NA_1 --ioa 500 --value false @tls-scada --tls-trust /secrets/ca.pem
+# Each of these must fail: a stack that ignored --tls-trust, or that ignored --tls altogether, would pass the cases above and not these.
+feature.tls.client-not-trusted	ro	1	ok=false error=tls-failed conf= term=false asdus= tls=false	server:tlsServer,client:tlsClient	@ext @tls-station --tls-trust /secrets/ca.pem	counter-interrogate @tls-rogue --tls-trust /secrets/ca.pem --timeout-ms 3000
+feature.tls.station-not-trusted	ro	1	ok=false error=tls-failed conf= term=false asdus= tls=false	server:tlsServer,client:tlsClient	@ext @tls-station --tls-trust /secrets/ca.pem	counter-interrogate @tls-scada --tls-trust /secrets/other-ca.pem --timeout-ms 3000
+feature.tls.station-without-tls	ro	1	ok=false error=tls-failed conf= term=false asdus= tls=false	server:groupInterrogation,client:tlsClient	@ext	counter-interrogate @tls-scada --tls-trust /secrets/ca.pem --timeout-ms 3000
+# File upload: one section, three sections with a shorter last one, the largest file taken.
+feature.upload.one-section	rw	0	ok=true error=- conf= term=false asdus=F_SC_NA_1/13,F_SC_NA_1/13,F_AF_NA_1/13,F_AF_NA_1/13 file=1000/1000/1	server:fileUploadServer,client:fileUploadClient	@ext	file-put --ioa 31000 --size 1000
+feature.upload.three-sections	rw	0	ok=true error=- conf= term=false asdus=F_SC_NA_1/13,F_SC_NA_1/13,F_AF_NA_1/13,F_SC_NA_1/13,F_AF_NA_1/13,F_SC_NA_1/13,F_AF_NA_1/13,F_AF_NA_1/13 file=5000/5000/3	server:fileUploadServer,client:fileUploadClient	@ext	file-put --ioa 31000 --size 5000 --section-size 2048
+feature.upload.largest	rw	0	ok=true error=- conf= term=false asdus=F_SC_NA_1/13,F_SC_NA_1/13,F_AF_NA_1/13,F_SC_NA_1/13,F_AF_NA_1/13,F_SC_NA_1/13,F_AF_NA_1/13,F_SC_NA_1/13,F_AF_NA_1/13,F_AF_NA_1/13 file=8192/8192/4	server:fileUploadServer,client:fileUploadClient	@ext	file-put --ioa 31000 --size 8192 --section-size 2048
+# Refused at file ready.
+feature.upload.unknown-address	ro	1	ok=false error=negative-confirmation conf= term=false asdus=F_FR_NA_1/47 file=1000/0/0	server:fileUploadServer,client:fileUploadClient	@ext	file-put --ioa 39999 --size 1000
+feature.upload.wrong-name	ro	1	ok=false error=negative-confirmation conf= term=false asdus=F_FR_NA_1/47 file=1000/0/0	server:fileUploadServer,client:fileUploadClient	@ext	file-put --ioa 31000 --name 9 --size 1000
+feature.upload.too-large	ro	1	ok=false error=negative-confirmation conf= term=false asdus=F_FR_NA_1/47 file=8193/0/0	server:fileUploadServer,client:fileUploadClient	@ext	file-put --ioa 31000 --size 8193 --section-size 2048
+# The address of a file to download is not a place to upload to.
+feature.upload.read-only-file	ro	1	ok=false error=negative-confirmation conf= term=false asdus=F_FR_NA_1/47 file=1000/0/0	server:fileUploadServer,client:fileUploadClient	@ext	file-put --ioa 30000 --size 1000
+# Directory, and download from the extended fixture.
+feature.directory.extended	ro	0	ok=true error=- conf= term=false asdus=F_DR_TA_1/5 directory=30000:1:1000:0,30001:2:5000:32	server:fileDirectoryServer,client:fileDirectoryClient	@ext	file-dir
+feature.directory.baseline	ro	0	ok=true error=- conf= term=false asdus=F_DR_TA_1/5 directory=30000:1:1000:0,30001:1:5000:32	server:fileDirectoryServer,client:fileDirectoryClient	-	file-dir
+feature.file-get.extended	ro	0	ok=true error=- conf= term=false asdus=F_FR_NA_1/13,F_SR_NA_1/13,F_SG_NA_1/13,F_SG_NA_1/13,F_SG_NA_1/13,F_SG_NA_1/13,F_SG_NA_1/13,F_LS_NA_1/13,F_LS_NA_1/13 file=1000/1000/1	server:groupInterrogation,server:fileServer,client:fileClient	@ext	file-get --ioa 30000 --name 1
+# Redundancy. Switching over with STOPDT: the event the station queued arrives on the standby first.
+feature.redundancy.stopdt	rw	0	ok=true error=- conf=7,7 term=true asdus=C_IC_NA_1/7,M_SP_NA_1/20,M_DP_NA_1/20,M_BO_NA_1/20,M_ME_NB_1/20,M_ME_NC_1/20,C_IC_NA_1/10,M_SP_NA_1/3,C_IC_NA_1/7,M_SP_NA_1/20,M_DP_NA_1/20,M_BO_NA_1/20,M_ME_NB_1/20,M_ME_NC_1/20,C_IC_NA_1/10 redundancy=7/8/0/true	server:redundancyServer,client:redundancyClient	@ext --redundancy-group	redundancy
+feature.redundancy.takeover	rw	0	ok=true error=- conf=7,7 term=true asdus=C_IC_NA_1/7,M_SP_NA_1/20,M_DP_NA_1/20,M_BO_NA_1/20,M_ME_NB_1/20,M_ME_NC_1/20,C_IC_NA_1/10,C_IC_NA_1/7,M_SP_NA_1/20,M_DP_NA_1/20,M_BO_NA_1/20,M_ME_NB_1/20,M_ME_NC_1/20,C_IC_NA_1/10 redundancy=7/7/0/false	server:redundancyServer,client:redundancyClient	@ext --redundancy-group	redundancy --switchover takeover
+# The same station without a group has no queue, so the client must time out.
+feature.redundancy.no-group	rw	1	ok=false error=timeout conf=7 term=true asdus=C_IC_NA_1/7,M_SP_NA_1/20,M_DP_NA_1/20,M_BO_NA_1/20,M_ME_NB_1/20,M_ME_NC_1/20,C_IC_NA_1/10 redundancy=7/0/0/false	server:groupInterrogation,client:redundancyClient	@ext	redundancy --timeout-ms 2000

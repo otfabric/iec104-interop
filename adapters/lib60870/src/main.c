@@ -7,9 +7,9 @@
 static const char USAGE[] =
     "usage: iec104-interop <command>\n"
     "\n"
-    "  server [--fixture PATH] [--bind-address ADDR] [--port N] [--ready-file PATH] [APCI]\n"
+    "  server [--fixture PATH] [--bind-address ADDR] [--port N] [--ready-file PATH] [APCI] [TLS]\n"
     "  client <operation> --host HOST [--port N] [--common-address N] [--originator-address N]\n"
-    "         [--timeout-ms N] [--connect-timeout-ms N] [--collect-ms N] [APCI] [operation flags]\n"
+    "         [--timeout-ms N] [--connect-timeout-ms N] [--collect-ms N] [APCI] [TLS] [operation flags]\n"
     "      connect             [--hold-ms N]\n"
     "      interrogate         [--qoi N]\n"
     "      counter-interrogate [--qcc N]\n"
@@ -20,11 +20,15 @@ static const char USAGE[] =
     "                          [--qualifier N] [--with-time]\n"
     "      monitor             [--duration-ms N] [--max-asdus N]\n"
     "      file-get            --ioa N [--name N]\n"
+    "      file-put            --ioa N --size N [--name N] [--section-size N]\n"
+    "      file-dir\n"
+    "      redundancy          [--switchover stopdt|takeover]\n"
     "  print-capabilities\n"
     "  print-fixture [NAME]\n"
     "  version\n"
     "\n"
     "  APCI: [--k N] [--w N] [--t0 S] [--t1 S] [--t2 S] [--t3 S]\n"
+    "  TLS:  [--tls --tls-cert PATH --tls-key PATH --tls-trust PATH]\n"
     "\n"
     "See docs/CONTAINER_CONTRACT.md in https://github.com/otfabric/iec104-interop\n";
 
@@ -35,7 +39,7 @@ int printCapabilities(void)
     static const char* commandTypes[] = { "C_SC_NA_1", "C_DC_NA_1", "C_RC_NA_1", "C_SE_NA_1", "C_SE_NB_1",
         "C_SE_NC_1" };
     static const char* operations[] = { "connect", "interrogate", "counter-interrogate", "read", "clock-sync",
-        "test-command", "command", "monitor", "file-get" };
+        "test-command", "command", "monitor", "file-get", "file-put", "file-dir", "redundancy" };
 
     cJSON* c = cJSON_CreateObject();
     cJSON_AddStringToObject(c, "schemaVersion", SCHEMA_VERSION);
@@ -57,7 +61,7 @@ int printCapabilities(void)
 
     cJSON* f = cJSON_AddObjectToObject(c, "features");
     cJSON_AddTrueToObject(f, "generalInterrogation");
-    cJSON_AddFalseToObject(f, "groupInterrogation");
+    cJSON_AddTrueToObject(f, "groupInterrogation");
     cJSON_AddTrueToObject(f, "counterInterrogation");
     cJSON_AddTrueToObject(f, "read");
     cJSON_AddTrueToObject(f, "clockSync");
@@ -71,16 +75,24 @@ int printCapabilities(void)
     cJSON_AddTrueToObject(f, "multipleConnections");
     /* The server reports STARTDT and STOPDT as events. */
     cJSON_AddTrueToObject(f, "dataTransferEvents");
-    cJSON_AddFalseToObject(f, "pointQualityOnBitstring");
-    cJSON_AddFalseToObject(f, "tls");
+    cJSON_AddTrueToObject(f, "pointQualityOnBitstring");
+    cJSON_AddTrueToObject(f, "tls");
+    cJSON_AddTrueToObject(f, "tlsServer");
+    cJSON_AddTrueToObject(f, "tlsClient");
     cJSON_AddTrueToObject(f, "fileTransfer");
     cJSON_AddTrueToObject(f, "fileServer");
     cJSON_AddTrueToObject(f, "fileClient");
+    cJSON_AddTrueToObject(f, "fileUploadServer");
+    cJSON_AddTrueToObject(f, "fileUploadClient");
+    cJSON_AddTrueToObject(f, "fileDirectoryServer");
+    cJSON_AddTrueToObject(f, "fileDirectoryClient");
+    cJSON_AddTrueToObject(f, "redundancyServer");
+    cJSON_AddTrueToObject(f, "redundancyClient");
     cJSON_AddFalseToObject(f, "secureAuthentication");
 
     cJSON_AddItemToObject(c, "pointTypes", cJSON_CreateStringArray(pointTypes, 8));
     cJSON_AddItemToObject(c, "commandTypes", cJSON_CreateStringArray(commandTypes, 6));
-    cJSON_AddItemToObject(c, "clientOperations", cJSON_CreateStringArray(operations, 9));
+    cJSON_AddItemToObject(c, "clientOperations", cJSON_CreateStringArray(operations, (int)(sizeof(operations) / sizeof(operations[0]))));
     emitJson(c);
     return EXIT_OK;
 }

@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.function.Predicate;
 
 import org.openmuc.j60870.ASdu;
 import org.openmuc.j60870.ASduType;
@@ -45,9 +46,80 @@ final class ServerCommand {
     private static final CauseOfTransmission UNKNOWN_IOA = CauseOfTransmission.causeFor(47);
 
     private final Fixture fx;
+    private final FileStation fileStation;
+    /** Null without --redundancy-group. */
+    private final Group group;
 
-    private ServerCommand(Fixture fx) {
+    private ServerCommand(Fixture fx, boolean redundancyGroup) {
         this.fx = fx;
+        this.fileStation = new FileStation(fx);
+        this.group = redundancyGroup ? new Group() : null;
+    }
+
+    /**
+     * The redundancy group of docs/FIXTURES.md. j60870 has none, only the state callback and Connection.close.
+     *
+     * <p>
+     * The callback runs on the reader of the connection, which holds its monitor. For STARTDT j60870 has by then put the
+     * confirmation into the buffer of the stream but not flushed it (Connection.java:388, 393, 395). So an I frame sent
+     * here goes after the confirmation, and a connection closed here is closed before the confirmation leaves. Its
+     * monitor is taken without holding the lock of the group, which is what its own reader might be waiting for.
+     */
+    private final class Group {
+        private Connection started;
+        private ASdu queued;
+
+        void dataTransferStarted(Connection c) throws IOException {
+            Connection replaced;
+            ASdu event;
+            synchronized (this) {
+                replaced = started == c ? null : started;
+                started = c;
+                event = queued;
+                queued = null;
+            }
+            if (replaced != null) {
+                replaced.close();
+            }
+            if (event != null) {
+                c.send(event);
+            }
+        }
+
+        void dataTransferStopped(Connection c) {
+            boolean wasStarted;
+            synchronized (this) {
+                wasStarted = started == c;
+                if (wasStarted) {
+                    started = null;
+                }
+            }
+            if (wasStarted) {
+                ASdu event = stationEvent();
+                synchronized (this) {
+                    queued = event;
+                }
+            }
+        }
+
+        synchronized void closed(Connection c) {
+            if (started == c) {
+                started = null;
+            }
+        }
+    }
+
+    /** The point of type M_SP_NA_1 with the lowest address, as it is now, with cause 3. Null without one. */
+    private ASdu stationEvent() {
+        synchronized (fx) {
+            for (Fixture.Point p : fx.points) {
+                if (p.type == ASduType.M_SP_NA_1) {
+                    return new ASdu(ASduType.M_SP_NA_1, false, CauseOfTransmission.causeFor(3), false, false, 0,
+                            fx.commonAddress, Codec.pointObject(p, null));
+                }
+            }
+        }
+        return null;
     }
 
     private static JsonObject event(String name) {
@@ -71,6 +143,8 @@ final class ServerCommand {
         Path readyFile = Path.of(args.string("--ready-file", Main.DEFAULT_READY_FILE));
         int port = args.integer("--port", 2404);
         Args.Apci apci = args.apci();
+        Tls tls = Tls.fromArgs(args);
+        boolean redundancyGroup = args.flag("--redundancy-group");
         args.finish("server");
         if (port < 1 || port > 65535) {
             throw new Args.UsageException("--port: " + port + " is not a TCP port");
@@ -85,8 +159,8 @@ final class ServerCommand {
         }
         Files.deleteIfExists(readyFile);
 
-        ServerCommand station = new ServerCommand(fx);
-        Server server = Server.builder()
+        ServerCommand station = new ServerCommand(fx, redundancyGroup);
+        Server.Builder builder = Server.builder()
                 .setBindAddr(InetAddress.getByName(bind))
                 .setPort(port)
                 .setMaxConnections(16)
@@ -94,8 +168,11 @@ final class ServerCommand {
                 .setMaxUnconfirmedIPdusReceived(apci.w)
                 .setMaxTimeNoAckReceived(apci.t1 * 1000)
                 .setMaxTimeNoAckSent(apci.t2 * 1000)
-                .setMaxIdleTime(apci.t3 * 1000)
-                .build();
+                .setMaxIdleTime(apci.t3 * 1000);
+        if (tls != null) {
+            builder.setSocketFactory(tls.serverFactory());
+        }
+        Server server = builder.build();
 
         CountDownLatch stopped = new CountDownLatch(1);
         try {
@@ -128,6 +205,12 @@ final class ServerCommand {
         ready.addProperty("address", bind + ":" + port);
         ready.addProperty("fixture", fx.name);
         ready.addProperty("commonAddress", fx.commonAddress);
+        if (tls != null) {
+            ready.addProperty("tls", true);
+        }
+        if (redundancyGroup) {
+            ready.addProperty("redundancyGroup", true);
+        }
         Main.emit(ready);
 
         stopped.await();
@@ -162,10 +245,12 @@ final class ServerCommand {
     }
 
     private final class Session implements ConnectionEventListener {
+        private final FileStation.Link files = fileStation.new Link();
+
         @Override
         public void newASdu(Connection connection, ASdu asdu) {
             try {
-                handle(connection, asdu);
+                handle(connection, asdu, files);
             } catch (IOException e) {
                 Main.log("send failed: " + e);
             } catch (RuntimeException e) {
@@ -179,6 +264,10 @@ final class ServerCommand {
                 // j60870 wraps what went wrong in its reader; a plain close has no cause.
                 Main.log("connection closed: " + cause.getCause());
             }
+            files.closed();
+            if (group != null) {
+                group.closed(connection);
+            }
             JsonObject e = event("connection-closed");
             e.addProperty("peer", peer(connection));
             Main.emit(e);
@@ -189,6 +278,18 @@ final class ServerCommand {
             JsonObject e = event(stopped ? "data-transfer-stopped" : "data-transfer-started");
             e.addProperty("peer", peer(connection));
             Main.emit(e);
+            if (group == null) {
+                return;
+            }
+            if (stopped) {
+                group.dataTransferStopped(connection);
+                return;
+            }
+            try {
+                group.dataTransferStarted(connection);
+            } catch (IOException | RuntimeException x) {
+                Main.log("cannot send the queued event: " + x);
+            }
         }
     }
 
@@ -205,7 +306,7 @@ final class ServerCommand {
         return oa == null ? 0 : oa;
     }
 
-    private void handle(Connection c, ASdu asdu) throws IOException {
+    private void handle(Connection c, ASdu asdu, FileStation.Link files) throws IOException {
         ASduType wire = asdu.getTypeIdentification();
         ASduType type = Codec.baseType(wire);
         int ca = asdu.getCommonAddress();
@@ -267,22 +368,54 @@ final class ServerCommand {
             }
             command(c, asdu, wire, type);
             return;
+        case F_SC_NA_1:
+            if (cot == CauseOfTransmission.REQUEST) {
+                fileStation.directory(c, asdu);
+            } else if (cot == CauseOfTransmission.FILE_TRANSFER) {
+                files.call(c, asdu);
+            } else {
+                reject(c, asdu, UNKNOWN_COT);
+            }
+            return;
+        case F_FR_NA_1:
+        case F_SR_NA_1:
+        case F_SG_NA_1:
+        case F_LS_NA_1:
+            if (cot != CauseOfTransmission.FILE_TRANSFER) {
+                reject(c, asdu, UNKNOWN_COT);
+            } else if (type == ASduType.F_FR_NA_1) {
+                files.fileReady(c, asdu);
+            } else if (type == ASduType.F_SR_NA_1) {
+                files.sectionReady(c, asdu);
+            } else if (type == ASduType.F_SG_NA_1) {
+                files.segment(c, asdu);
+            } else {
+                files.last(c, asdu);
+            }
+            return;
+        case F_AF_NA_1:
+            if (cot != CauseOfTransmission.FILE_TRANSFER) {
+                reject(c, asdu, UNKNOWN_COT);
+                return;
+            }
+            files.acknowledged(c, asdu);
+            return;
         default:
             reject(c, asdu, UNKNOWN_TYPE);
         }
     }
 
     /**
-     * Sends the points selected by counters (true: integrated totals, false: everything else) in ascending address
-     * order, packing consecutive points of one type into one ASDU.
+     * Sends the selected points in ascending address order, packing consecutive points of one type into one ASDU.
      */
-    private void sendPoints(Connection c, CauseOfTransmission cot, int oa, boolean counters) throws IOException {
+    private void sendPoints(Connection c, CauseOfTransmission cot, int oa, Predicate<Fixture.Point> selected)
+            throws IOException {
         List<InformationObject> batch = new ArrayList<>();
         ASduType current = null;
         List<ASdu> out = new ArrayList<>();
         synchronized (fx) {
             for (Fixture.Point p : fx.points) {
-                if ((p.type == ASduType.M_IT_NA_1) != counters) {
+                if (!selected.test(p)) {
                     continue;
                 }
                 if (!batch.isEmpty() && (p.type != current || batch.size() >= MAX_OBJECTS)) {
@@ -306,7 +439,15 @@ final class ServerCommand {
     private void interrogation(Connection c, ASdu asdu) throws IOException {
         int qoi = ((IeQualifierOfInterrogation) asdu.getInformationObjects()[0].getInformationElements()[0][0])
                 .getValue();
+        boolean group = qoi >= 21 && qoi <= 36;
+        Predicate<Fixture.Point> selected = group ? p -> p.groups.contains(qoi - 20)
+                : p -> p.type != ASduType.M_IT_NA_1;
         boolean accepted = qoi == 20;
+        if (group) {
+            synchronized (fx) {
+                accepted = fx.points.stream().anyMatch(selected);
+            }
+        }
         JsonObject e = event("interrogation");
         e.addProperty("commonAddress", asdu.getCommonAddress());
         e.addProperty("qoi", qoi);
@@ -317,7 +458,8 @@ final class ServerCommand {
             return;
         }
         confirm(c, asdu, false);
-        sendPoints(c, CauseOfTransmission.INTERROGATED_BY_STATION, originator(asdu), false);
+        // The causes 21..36 are the groups 1..16.
+        sendPoints(c, CauseOfTransmission.causeFor(qoi), originator(asdu), selected);
         c.sendActivationTermination(asdu, fx.commonAddress);
     }
 
@@ -336,7 +478,8 @@ final class ServerCommand {
             return;
         }
         confirm(c, asdu, false);
-        sendPoints(c, CauseOfTransmission.REQUESTED_BY_GENERAL_COUNTER, originator(asdu), true);
+        sendPoints(c, CauseOfTransmission.REQUESTED_BY_GENERAL_COUNTER, originator(asdu),
+                p -> p.type == ASduType.M_IT_NA_1);
         c.sendActivationTermination(asdu, fx.commonAddress);
     }
 
@@ -378,14 +521,15 @@ final class ServerCommand {
         InformationObject report = null;
         ASduType reportType = null;
         int reportCause = 0;
+        // Not sending with the lock held: the state callback of a connection takes it with the connection's monitor.
+        Fixture.Command cmd = fx.command(ioa);
+        if (cmd == null || cmd.type != type) {
+            e.addProperty("outcome", "unknown-ioa");
+            Main.emit(e);
+            reject(c, asdu, UNKNOWN_IOA);
+            return;
+        }
         synchronized (fx) {
-            Fixture.Command cmd = fx.command(ioa);
-            if (cmd == null || cmd.type != type) {
-                e.addProperty("outcome", "unknown-ioa");
-                Main.emit(e);
-                reject(c, asdu, UNKNOWN_IOA);
-                return;
-            }
             double value;
             boolean select;
             boolean valid = true;

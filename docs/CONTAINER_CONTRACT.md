@@ -1,6 +1,6 @@
 # Container contract
 
-Version: **1.2** (`contract_version` in [versions.yaml](../versions.yaml))
+Version: **1.3** (`contract_version` in [versions.yaml](../versions.yaml))
 
 Every adapter image exposes the same commands, flags, JSON documents and exit
 codes. Consumers depend on this document, not on any adapter's source. A
@@ -10,6 +10,7 @@ and changes only with the major version.
 
 | Version | Change |
 |---------|--------|
+| 1.3 | Interrogation groups and `groups` in fixtures, the feature `groupInterrogation`; a quality on `M_BO_NA_1`, the feature `pointQualityOnBitstring`; the fixture `extended`. The [transport security flags](#transport-security-flags) of IEC 62351-3, `tls` in the `ready` event and in the result document, the error `tls-failed`, the features `tlsServer` and `tlsClient`, and `tls`, which says an image has both. The operations `file-put` and `file-dir`, the server event `file-received`, `uploads` in fixtures, `directory` in the result document, F_DR_TA_1 in ASDU documents, the features `fileUploadServer`, `fileUploadClient`, `fileDirectoryServer` and `fileDirectoryClient`. The server flag `--redundancy-group`, `redundancyGroup` in the `ready` event, the operation `redundancy`, `redundancy` in the result document, the features `redundancyServer` and `redundancyClient` |
 | 1.2 | The [security flags](#security-flags) of the A-Profile of IEC 62351-5; `secure` in the `ready` event; `secured` in the result document; the error `security-failed`; a mirror with cause 17 counts as a confirmation; the feature `secureAuthentication` |
 | 1.1 | The `file-get` operation, its `file` result and the file transfer ASDU documents; the `file-transfer` server event; `files` in fixtures; the features `fileServer`, `fileClient` and `dataTransferEvents` |
 | 1.0 | First release |
@@ -26,6 +27,7 @@ What a *station* does with a request is defined by its fixture: see
 - [Image layout](#image-layout)
 - [Commands](#commands)
 - [Security flags](#security-flags)
+- [Transport security flags](#transport-security-flags)
 - [`server`](#server)
 - [`client`](#client)
 - [ASDU documents](#asdu-documents)
@@ -43,7 +45,7 @@ What a *station* does with a request is defined by its fixture: see
 | Default command | `server` |
 | Port | 2404/tcp |
 | User | non-root, uid 10001 |
-| Fixtures | `/fixtures/<name>/fixture.json` (baked in; mount over `/fixtures` to replace) |
+| Fixtures | `/fixtures/<name>/fixture.json` (baked in: `baseline` and `extended`; mount over `/fixtures` to replace) |
 | Readiness file | `/run/iec104-interop/ready` |
 | Health check | built in: `test -f /run/iec104-interop/ready` |
 | Licences | `/licenses/` |
@@ -128,6 +130,41 @@ client sets up the association after STARTDT con and waits for it within
 Key material is mounted into the container: the files must be readable by
 uid 10001.
 
+## Transport security flags
+
+TLS with mutual authentication, as IEC 62351-3 profiles it for IEC 60870-5-104:
+the IEC 104 connection runs inside the TLS session. `server` accepts these flags with the feature `tlsServer`, and every `client`
+operation with the feature `tlsClient`; otherwise they are unknown flags (exit 2).
+The feature `tls` is true when an image has both.
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--tls` | off | Run the connection over TLS, version 1.2 or later. Without it every other flag of this table is a usage error |
+| `--tls-cert PATH` | required | Own certificate, PEM |
+| `--tls-key PATH` | required | Own private key, PEM, PKCS #8, on secp256r1 (P-256) |
+| `--tls-trust PATH` | required | The authorities that sign the remote station's certificate, PEM, one or more certificates |
+
+- Both sides present a certificate, and each refuses a certificate its
+  `--tls-trust` authorities did not sign. A file with a key or certificate that
+  cannot be loaded is a usage error, and nothing is sent.
+- A host name or address is not checked: the certificate says who the station
+  is, whatever the network calls it.
+- `--tls` with `--secure` is a usage error in this version of the contract.
+- The port does not change: `--port` still says it (IEC 62351-3's 19998 is for
+  the caller to pass).
+
+With `--tls`, the client's result document has `tls`. Everything that goes wrong
+between the TCP connection and STARTDT con is the error `tls-failed`, whatever
+the stack saw: a refused certificate, a station that does not speak TLS, a
+handshake or STARTDT that took longer than `--timeout-ms`, or a connection the
+station closed after a handshake (with TLS 1.3 a client learns only then that
+its certificate was refused). A station that cannot be reached is still
+`connect-failed`.
+
+A station with `--tls` accepts nothing but TLS: a client without TLS gets no
+STARTDT con. Key material is mounted into the container: the files must be
+readable by uid 10001.
+
 ## `server`
 
 Runs a controlled station that serves one fixture until it receives SIGTERM
@@ -139,6 +176,7 @@ or SIGINT.
 | `--bind-address ADDR` | `0.0.0.0` | Listen address |
 | `--port N` | 2404 | Listen port |
 | `--ready-file PATH` | `/run/iec104-interop/ready` | Readiness file |
+| `--redundancy-group` | off | All connections form one [redundancy group](FIXTURES.md#redundancy-group). Only with the feature `redundancyServer`; for any other image it is an unknown flag (exit 2) |
 | APCI flags | | |
 
 Lifecycle:
@@ -152,8 +190,9 @@ Lifecycle:
 4. On SIGTERM/SIGINT the readiness file is removed, connections are closed,
    the `stopped` event is printed and the process exits 0.
 
-Every connection is an independent session with its own STARTDT/STOPDT state.
-Up to 16 simultaneous connections are accepted. The station state (point
+Every connection is an independent session with its own STARTDT/STOPDT state,
+unless `--redundancy-group` is given. Up to 16 simultaneous connections are
+accepted. The station state (point
 values, selections) is shared by all connections and lives as long as the
 process: restart the container to return to the fixture.
 
@@ -163,7 +202,7 @@ One JSON object per line on stdout.
 
 | `event` | Other fields | When |
 |---------|--------------|------|
-| `ready` | `adapter`, `address`, `fixture`, `commonAddress`; `secure` (true) with `--secure` | Once, when the station accepts connections |
+| `ready` | `adapter`, `address`, `fixture`, `commonAddress`; `secure` (true) with `--secure`; `tls` (true) with `--tls`; `redundancyGroup` (true) with `--redundancy-group` | Once, when the station accepts connections |
 | `connection-opened` | `peer` (`ip:port`) | A controlling station connected |
 | `data-transfer-started` | `peer` | STARTDT confirmed. Only with the feature `dataTransferEvents` |
 | `data-transfer-stopped` | `peer` | STOPDT confirmed. Only with the feature `dataTransferEvents` |
@@ -174,6 +213,7 @@ One JSON object per line on stdout.
 | `clock-sync` | `time` | C_CS_NA_1 received |
 | `command` | `type`, `ioa`, `cot`, `value`, `select`, `outcome` | A process command for the station was received |
 | `file-transfer` | `ioa`, `name`, `success` | A file transfer ended: acknowledged by the controlling station (`success` true) or not. Only with the feature `fileServer` |
+| `file-received` | `ioa`, `name`, `length`, `sha256`, `success` | A file sent by a controlling station arrived, complete (`success` true: every length and checksum matched, and it is stored) or not. `length` and `sha256` (lower-case hex) are of what arrived, which on a failure may be less than was announced. Only with the feature `fileUploadServer` |
 | `stopped` | | Once, after a clean stop |
 
 `command.type` is the type identification on the wire (`C_SC_TA_1` for a
@@ -213,13 +253,14 @@ the operation, close the connection.
 | `--collect-ms N` | 0 | After a successful operation, keep receiving for this long before closing |
 | APCI flags | | |
 | [Security flags](#security-flags) | | |
+| [Transport security flags](#transport-security-flags) | | |
 
 ### Operations
 
 | Operation | Flags | Sends | Succeeds when |
 |-----------|-------|-------|---------------|
 | `connect` | `--hold-ms N` (0) | STARTDT act; after the hold, STOPDT act | STOPDT con is received. During the hold the connection is idle, so `t3` and TESTFR run |
-| `interrogate` | `--qoi N` (20) | C_IC_NA_1 activation | Positive activation confirmation, then activation termination |
+| `interrogate` | `--qoi N` (20) | C_IC_NA_1 activation. QOI 21..36 are the interrogation groups 1..16; only with the feature `groupInterrogation` are they answered by anything but a refusal | Positive activation confirmation, then activation termination |
 | `counter-interrogate` | `--qcc N` (5) | C_CI_NA_1 activation; `qcc` is the raw qualifier octet | Positive activation confirmation, then activation termination |
 | `read` | `--ioa N` (required) | C_RD_NA_1 | An ASDU with cause 5 (request) containing the address arrives |
 | `clock-sync` | `--time T` (now) | C_CS_NA_1 activation; `T` like `2026-01-02T03:04:05.678Z` | Positive activation confirmation |
@@ -227,6 +268,9 @@ the operation, close the connection.
 | `command` | see below | A process command | See below |
 | `monitor` | `--duration-ms N` (1000), `--max-asdus N` (0: no limit) | Nothing | The duration passed or the number of ASDUs was received, with the connection still up |
 | `file-get` | `--ioa N` (required), `--name N` (1) | The file transfer procedure in monitor direction: see [below](#file-get) | The whole file arrived, every checksum and length matched and the file was acknowledged. Only with the feature `fileClient` |
+| `file-put` | `--ioa N` (required), `--name N` (1), `--size N` (required), `--section-size N` (`--size`) | The file transfer procedure in control direction: see [below](#file-put) | The station called the file and every section, and acknowledged every section and the file. Only with the feature `fileUploadClient` |
+| `redundancy` | `--switchover M` (`stopdt`) | Two connections to one station, the second taking over: see [below](#redundancy) | Every step of the sequence below. Only with the feature `redundancyClient` |
+| `file-dir` | | The call of the directory: see [below](#file-dir) | The entry marked as the last one arrived. Only with the feature `fileDirectoryClient` |
 
 `command` flags:
 
@@ -274,6 +318,67 @@ the negative bit: the error is `negative-confirmation`. The refusal is in
 `asdus`; `confirmations` stays empty, since it is not a mirror with cause 7
 or 9.
 
+### `file-put`
+
+Sends one file with the procedure of IEC 60870-5-101 7.4.11, the station doing
+the calling. Every ASDU has cause 13. `--ioa` is the address of the file and
+`--name` its name of file; `--size` (1..65536) is its length and `--section-size`
+(1..`--size`) the length of every section but the last. NOS is one octet, so more
+than 255 sections are a usage error. The content is defined
+as in a fixture: octet `i`, counting from 0, is `(i + ioa) mod 251`.
+
+| Step | Controlling station | Controlled station |
+|-----:|---------------------|--------------------|
+| 1 | F_FR_NA_1 (file ready) with the length of the file | F_SC_NA_1, SCQ 2 (request file) |
+| 2 | F_SR_NA_1 (section ready), NOS 1, with the length of the section | F_SC_NA_1, SCQ 6 (request section), the same NOS |
+| 3 | F_SG_NA_1 segments, then F_LS_NA_1 with LSQ 3 and the checksum of the section | F_AF_NA_1, AFQ 3 (section acknowledged). Then back to step 2 for the next section |
+| 4 | After the last section, F_LS_NA_1 with LSQ 1 and the checksum of the file | F_AF_NA_1, AFQ 1 (file acknowledged) |
+
+A segment carries at most 236 octets. The NOS of the F_LS_NA_1 of step 4 is the
+client's and the station's F_AF_NA_1 repeats it; [FIXTURES.md](FIXTURES.md) says
+why it is not compared.
+
+A station that refuses the file answers step 1 with the mirrored F_FR_NA_1 and
+cause 47, or with F_AF_NA_1 and a negative AFQ (2 or 4 in the low four bits; the high four
+may name the error) at step 3 or 4: the error is `negative-confirmation`. The refusal is in `asdus`; `confirmations` stays
+empty.
+
+### `file-dir`
+
+Sends F_SC_NA_1 with cause 5 (request), address 0, NOF 0, NOS 0 and SCQ 0, and
+collects the F_DR_TA_1 answers with cause 5 up to the entry with the LFD bit
+(0x20) in its SOF. A mirrored F_SC_NA_1 with cause 44..47 is the error
+`negative-confirmation`; it is in `asdus`, and `confirmations` stays empty.
+
+### `redundancy`
+
+A controlling station with two connections to one station, IEC 60870-5-104
+clause 10. The first is the primary and the second the standby. Both are
+established at the start, and the standby stays in STOPDT until step 4.
+
+| Step | `--switchover stopdt` | `--switchover takeover` |
+|-----:|-----------------------|-------------------------|
+| 1 | Connect the primary and the standby. STARTDT on the primary | The same |
+| 2 | C_IC_NA_1 (QOI 20) on the primary, until its activation termination | The same |
+| 3 | STOPDT on the primary, until STOPDT con; the connection stays up | Nothing: the primary is still started |
+| 4 | STARTDT on the standby, until STARTDT con | The same |
+| 5 | Wait for one ASDU with cause 3 on the standby: the [event](FIXTURES.md#redundancy-group) the station queued | Nothing |
+| 6 | C_IC_NA_1 (QOI 20) on the standby, until its activation termination | The same |
+| 7 | STOPDT on the standby, until STOPDT con; close both | The same |
+
+An I frame on a connection outside the time it is started is a stray: on the
+standby before its STARTDT con, or on the primary after STOPDT con (`stopdt`) or
+after the standby's STARTDT con (`takeover`). Any stray is the error `failed`.
+Without an event at step 5 the error is `timeout`. If the primary closes before
+step 4 ends with `stopdt`, the error is `connection-lost`; with `takeover` it may
+close, which [FIXTURES.md](FIXTURES.md#redundancy-group) leaves to the library.
+
+`connected` is true when both connections were established. `startdtConfirmed` is
+the primary's, `stopdtConfirmed` the standby's at step 7. No STOPDT con at step 3
+or 7 is the error `stopdt-timeout`, no STARTDT con at step 4 `startdt-timeout`.
+`confirmations` has one entry per C_IC_NA_1, `terminated` says that the last one
+ended, and `asdus` has what arrived on either connection in the order it arrived.
+
 ### Result document
 
 Exactly one JSON object on one line of stdout, for every invocation that got
@@ -288,11 +393,14 @@ past argument parsing, including failures.
 | `error` | object or null | `{ "code", "message" }` when `ok` is false |
 | `connected` | boolean | The TCP connection was established |
 | `startdtConfirmed` | boolean | STARTDT con was received |
-| `stopdtConfirmed` | boolean | `connect` only: STOPDT con was received |
+| `stopdtConfirmed` | boolean | `connect` and `redundancy` only: STOPDT con was received |
 | `confirmations` | array | `{ "cot", "negative" }` for each mirror of the request that confirms or refuses it, in order |
 | `terminated` | boolean | An activation termination of the request was received |
 | `secured` | boolean | With `--secure` only: the association was established |
-| `file` | object | `file-get` only: `ioa`, `name`, `length` (announced by file ready), `received` (octets that arrived), `sections` (sections called) and `sha256` (lower-case hex of what arrived) |
+| `tls` | boolean | With `--tls` only: STARTDT con arrived over the TLS session |
+| `file` | object | `file-get` and `file-put` only: `ioa`, `name`, `length` (announced by file ready), `received` (octets that arrived; for `file-put`, octets sent in sections the station called), `sections` (sections called) and `sha256` (lower-case hex of those octets) |
+| `redundancy` | object | `redundancy` only: `switchover`; `primaryAsdus` and `standbyAsdus` (ASDUs received on each while it was started); `strayAsdus` (I frames outside that time); `queuedEvent` (step 5: the event arrived; false with `takeover`) |
+| `directory` | array | `file-dir` only: one `{ioa, nof, lof, sof}` per entry received, in order |
 | `asdus` | array | Every ASDU received, in order: see [ASDU documents](#asdu-documents) |
 | `elapsedMs` | number | Wall-clock duration |
 
@@ -307,10 +415,11 @@ authorized).
 |------|---------|------|
 | `connect-failed` | No TCP connection | 3 |
 | `startdt-timeout` | No STARTDT con within `--timeout-ms` | 1 |
-| `stopdt-timeout` | `connect`: no STOPDT con | 1 |
+| `stopdt-timeout` | `connect`, `redundancy`: no STOPDT con | 1 |
 | `timeout` | The station did not answer in time | 1 |
 | `negative-confirmation` | The station refused: negative confirmation or cause 17 or 44..47 | 1 |
 | `security-failed` | `--secure`: no association with the station within `--timeout-ms` | 1 |
+| `tls-failed` | `--tls`: no TLS session with the station that got as far as STARTDT con | 1 |
 | `connection-lost` | The connection closed during the operation | 1 |
 | `failed` | Anything else; see `message` | 1 |
 
@@ -370,18 +479,22 @@ tag is set.
 | `F_LS_NA_1` | `nof`, `nos`, `lsq`, `chs` |
 | `F_AF_NA_1` | `nof`, `nos`, `afq` |
 | `F_SG_NA_1` | `nof`, `nos`, `data` (the segment, lower-case hex) |
+| `F_DR_TA_1` | `nof`, `lof`, `sof`, `time` |
 
 `nof` and `nos` are the name of file and of section, `lof` the length of the
-file or section; the qualifiers (`frq`, `srq`, `scq`, `lsq`, `afq`) are the
-raw octets and `chs` is the checksum.
+file or section; the qualifiers (`frq`, `srq`, `scq`, `lsq`, `afq`) and the
+status of file (`sof`) are the raw octets and `chs` is the checksum.
 
 An adapter reports what its library hands it. A library that drops a type on
 reception leaves no trace of it in `asdus`: wendy512 cannot receive the
-CP56Time2a command types or F_SG_NA_1 and declares so in its capabilities.
+CP56Time2a command types or F_SG_NA_1 and declares so in its capabilities: it
+has no `fileTransfer`, `fileClient` or `fileUploadServer`, since each of those
+needs a segment to arrive.
 
 `quality` is an array of flag abbreviations in this order: `OV`, `BL`, `SB`,
 `NT`, `IV`; for integrated totals `CY`, `CA`, `IV`. An empty array means
-good.
+good. A received `M_BO_NA_1` reports its quality like any other point, whether
+or not the adapter can serve one (`pointQualityOnBitstring`).
 
 `time` is UTC, `YYYY-MM-DDTHH:MM:SS.mmmZ`. Adapters put UTC on the wire.
 

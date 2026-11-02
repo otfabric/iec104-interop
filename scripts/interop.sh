@@ -10,7 +10,8 @@
 #   - a general interrogation returns exactly the points of the fixture,
 #   - a command changes what a later interrogation reports,
 #   - k = w = 1, an idle connection and concurrent sessions work.
-# And tests/secure-cases.tsv for the pairings that have the security flags.
+# And tests/feature-cases.tsv and tests/secure-cases.tsv for the pairings that
+# have what those cases need.
 #
 # tests/known-bugs.tsv lists bugs of specific upstream versions; a case they
 # explain is counted as a known bug instead of a failure.
@@ -277,6 +278,190 @@ while IFS=$'\t' read -r file_ioa file_name file_size; do
         done
     done
 done < <(jq -r '.files[]? | [.ioa, .name, .size] | @tsv' "${FIXTURE}")
+
+# ---- features beyond the baseline fixture ----
+# tests/feature-cases.tsv. "ro" cases share one server per adapter and set of
+# flags; "rw" cases get a fresh one. A pairing that lacks a feature skips them.
+FEATURE_CASES="${ROOT}/tests/feature-cases.tsv"
+feature_flags() {
+    sed -E -e 's#@ext#--fixture /fixtures/extended/fixture.json#g' \
+        -e 's#@tls-([a-z-]+)#--tls --tls-cert /secrets/\1.pem --tls-key /secrets/\1.key#g' <<<"$1"
+}
+feature_server() {  # feature_server <state> <adapter> <flags>: prints the container name; a shared one stays up
+    local tag name
+    if [[ "$1" == "ro" ]]; then
+        tag="f$(cksum <<<"$3" | cut -d' ' -f1)"
+        name=$(SERVER_TAG="${tag}" server_name "$2")
+        if docker inspect "${name}" >/dev/null 2>&1; then echo "${name}"; return 0; fi
+    else
+        tag=fresh
+    fi
+    # shellcheck disable=SC2086
+    name=$(SERVER_TAG="${tag}" start_server "$2" ${3}) || return 1
+    wait_ready "${name}" || return 1
+    echo "${name}"
+}
+make_identities "${WORK}/secrets" || { fail "cannot make key material with openssl"; finish; exit 1; }
+DOCKER_ARGS=(-v "${WORK}/secrets:/secrets:ro")
+n=0
+while IFS=$'\t' read -r case_id state want_exit want_summary needs server_flags operation; do
+    [[ -z "${case_id}" || "${case_id}" == \#* ]] && continue
+    n=$((n + 1))
+    [[ "${server_flags}" == "-" ]] && server_flags=""
+    server_flags=$(feature_flags "${server_flags}"); operation=$(feature_flags "${operation}")
+    reference="" reference_pair=""
+    for server in "${ADAPTERS[@]}"; do
+        for client in "${ADAPTERS[@]}"; do
+            pair="${client}->${server}"
+            at "${case_id}" "${client}" "${server}"
+            if ! supported "${client}" "${server}" "${needs}"; then
+                skip "${pair}: ${case_id} (needs ${needs})"
+                continue
+            fi
+            name=$(feature_server "${state}" "${server}" "${server_flags}") || { fail "${pair}: ${case_id}: the server did not start"; continue; }
+            # shellcheck disable=SC2086
+            doc=$(run_client "${client}" ${operation} --host "${name}"); CLIENT_EXIT=$?
+            [[ "${state}" == "rw" ]] && stop_server "${name}"
+            keep "feature${n}-${pair}" "${doc}"
+            bug=$(known_bug "${client}" "${server}" "${operation}")
+            summary=$(jq -r "${FEATURE_SUMMARY}" <<<"${doc}" 2>/dev/null)
+            if [[ "${summary}" != "${want_summary}" || "${CLIENT_EXIT}" != "${want_exit}" ]]; then
+                if [[ -n "${bug}" ]]; then
+                    hit_known_bug "${pair}" "${operation}" "${bug}"
+                    continue
+                fi
+                fail "${pair}: ${case_id}: server ${server_flags}: ${operation}"
+                log "    want exit=${want_exit} ${want_summary}"
+                log "    got  exit=${CLIENT_EXIT} ${summary:-<no result document>}"
+                continue
+            fi
+            ok "${pair}: ${case_id}"
+            [[ -n "${bug}" ]] && continue
+            at "${case_id}.agrees" "${client}" "${server}"
+            normalized=$(jq -cS "${NORMALIZE}" <<<"${doc}")
+            if [[ -z "${reference}" ]]; then
+                reference="${normalized}"; reference_pair="${pair}"
+            elif [[ "${normalized}" != "${reference}" ]]; then
+                fail "${pair} and ${reference_pair} disagree on: ${case_id}"
+                diff <(jq -S . <<<"${reference}") <(jq -S . <<<"${normalized}") | head -20 >&2
+            else
+                ok "${pair} agrees with ${reference_pair}: ${case_id}"
+            fi
+        done
+    done
+done < "${FEATURE_CASES}"
+
+# ---- values: an uploaded file arrives as it was sent, and is kept ----
+# The station's own event says what arrived; the client's report is not evidence
+# of that. Then whoever can fetches it back and finds it in the directory.
+for server in "${ADAPTERS[@]}"; do
+    has "${server}" fileUploadServer || continue
+    for client in "${ADAPTERS[@]}"; do
+        pair="${client}->${server}"
+        at values.upload-event "${client}" "${server}"
+        supported "${client}" "${server}" "server:fileUploadServer,client:fileUploadClient" || { skip "${pair}: upload"; continue; }
+        name=$(feature_server rw "${server}" "$(feature_flags @ext)") || { fail "${pair}: the server did not start"; continue; }
+        want_hash=$(python3 -c 'import hashlib; print(hashlib.sha256(bytes((i+31000)%251 for i in range(5000))).hexdigest())')
+        run_client "${client}" file-put --ioa 31000 --size 5000 --section-size 2048 --host "${name}" >/dev/null
+        got=$(docker logs "${name}" 2>/dev/null | jq -c 'select(.event == "file-received") | [.ioa, .name, .length, .success, .sha256]' | tail -1)
+        if [[ "${got}" == "[31000,1,5000,true,\"${want_hash}\"]" ]]; then ok "${pair}: the station received what the fixture rule says"
+        else fail "${pair}: file-received event is ${got:-absent}, want 5000 octets with sha256 ${want_hash}"; fi
+        at values.upload-read-back "${client}" "${server}"
+        reader="${client}"
+        has "${reader}" fileClient || reader="${server}"
+        if has "${server}" fileServer && has "${reader}" fileClient; then
+            got=$(run_client "${reader}" file-get --ioa 31000 --name 1 --host "${name}" | jq -c '[.file.length, .file.received, .file.sha256]')
+            if [[ "${got}" == "[5000,5000,\"${want_hash}\"]" ]]; then ok "${pair}: the stored file can be fetched"
+            else fail "${pair}: the stored file reads back as ${got}, want sha256 ${want_hash}"; fi
+        else
+            skip "${pair}: read back"
+        fi
+        at values.upload-directory "${client}" "${server}"
+        reader="${client}"
+        has "${reader}" fileDirectoryClient || reader="${server}"
+        if has "${server}" fileDirectoryServer && has "${reader}" fileDirectoryClient; then
+            got=$(run_client "${reader}" file-dir --host "${name}" | jq -c '[.directory[] | [.ioa, .nof, .lof, .sof]]')
+            if [[ "${got}" == '[[30000,1,1000,0],[30001,2,5000,0],[31000,1,5000,32]]' ]]; then ok "${pair}: the stored file is in the directory"
+            else fail "${pair}: directory after an upload is ${got}"; fi
+        else
+            skip "${pair}: directory after an upload"
+        fi
+        # An upload that was refused leaves nothing behind.
+        at values.upload-refused-no-event "${client}" "${server}"
+        run_client "${client}" file-put --ioa 39999 --size 1000 --host "${name}" >/dev/null
+        got=$(docker logs "${name}" 2>/dev/null | jq -c 'select(.event == "file-received" and .ioa == 39999)')
+        if [[ -z "${got}" ]]; then ok "${pair}: a refused upload is not received"; else fail "${pair}: refused upload was received: ${got}"; fi
+        stop_server "${name}"
+    done
+done
+
+# ---- values: the queued event of a redundancy group ----
+for server in "${ADAPTERS[@]}"; do
+    has "${server}" redundancyServer || continue
+    for client in "${ADAPTERS[@]}"; do
+        pair="${client}->${server}"
+        at values.redundancy-event "${client}" "${server}"
+        supported "${client}" "${server}" "server:redundancyServer,client:redundancyClient" || { skip "${pair}: redundancy"; continue; }
+        name=$(feature_server rw "${server}" "$(feature_flags "@ext --redundancy-group")") || { fail "${pair}: the server did not start"; continue; }
+        # The event carries the state of the station, so change it first.
+        run_client "${client}" command --type C_SC_NA_1 --ioa 500 --value false --host "${name}" >/dev/null
+        got=$(run_client "${client}" redundancy --host "${name}" | jq -c '[.asdus[] | select(.cot == 3) | {type, ioa: .objects[0].ioa, value: .objects[0].value, quality: .objects[0].quality, originator}]')
+        # The command's connection stopped too, by closing; only STOPDT queues.
+        if [[ "${got}" == '[{"type":"M_SP_NA_1","ioa":100,"value":false,"quality":[],"originator":0}]' ]]; then ok "${pair}: the event has the current value, once"
+        else fail "${pair}: the queued event is ${got}"; fi
+        stop_server "${name}"
+    done
+done
+
+# ---- tls: a client without TLS gets nothing from a station with it ----
+for server in "${ADAPTERS[@]}"; do
+    has "${server}" tlsServer || continue
+    name=$(feature_server ro "${server}" "$(feature_flags "@ext @tls-station --tls-trust /secrets/ca.pem")") \
+        || { fail "${server}: the TLS server did not start"; continue; }
+    for client in "${ADAPTERS[@]}"; do
+        pair="${client}->${server}"
+        at feature.tls.client-without-tls "${client}" "${server}"
+        has_role "${client}" client || { skip "${pair}: client without TLS"; continue; }
+        # Which error is the stack's own: its peer closed, or never answered.
+        doc=$(run_client "${client}" counter-interrogate --timeout-ms 3000 --host "${name}"); CLIENT_EXIT=$?
+        if [[ "${CLIENT_EXIT}" != 0 ]] && jq -e '.ok == false and .startdtConfirmed == false and (.asdus | length) == 0' <<<"${doc}" >/dev/null 2>&1
+        then ok "${pair}: no STARTDT con without TLS"; else fail "${pair}: a client without TLS got through to a TLS station: ${doc}"; fi
+    done
+done
+
+# ---- values: the groups and qualities of the extended fixture ----
+# The outcome line shows types and causes only; here the objects themselves
+# are compared with the fixture, which is what can fail when a flag or a group
+# is dropped.
+EXTENDED="${ROOT}/fixtures/extended/fixture.json"
+for server in "${ADAPTERS[@]}"; do
+    has "${server}" pointQualityOnBitstring || continue
+    name=$(feature_server ro "${server}" "$(feature_flags @ext)") || { fail "${server}: the extended server did not start"; continue; }
+    for client in "${ADAPTERS[@]}"; do
+        pair="${client}->${server}"
+        for group in 0 1 2 3 16; do
+            at "values.group-${group}" "${client}" "${server}"
+            if (( group == 0 )); then
+                qoi=20; select='.type != "M_IT_NA_1"'
+            else
+                qoi=$((20 + group)); select="((.groups // []) | index(${group})) != null"
+                supported "${client}" "${server}" "server:groupInterrogation,client:groupInterrogation" \
+                    || { skip "${pair}: group ${group}"; continue; }
+            fi
+            want=$(jq -cS "[.points[] | select(${select}) | {ioa, type, value, quality: (.quality // [])}] | sort_by(.ioa)" "${EXTENDED}")
+            got=$(run_client "${client}" interrogate --qoi "${qoi}" --host "${name}" | jq -cS --argjson cot "${qoi}" "${got_points}")
+            if [[ "${got}" == "${want}" ]]; then ok "${pair}: group ${group} matches the fixture"
+            else fail "${pair}: group ${group} does not match the fixture"; log "    want ${want}"; log "    got  ${got}"; fi
+        done
+        at values.bitstring-quality-read "${client}" "${server}"
+        got=$(run_client "${client}" read --ioa 104 --host "${name}" | jq -c '[.asdus[] | .objects[] | select(.ioa == 104) | {value, quality}] | first')
+        if [[ "${got}" == '{"value":1431655765,"quality":["OV","IV"]}' ]]; then ok "${pair}: quality of a bitstring"
+        elif bug=$(known_bug "${client}" "${server}" "read --ioa 104"); then hit_known_bug "${pair}" "read of a bitstring" "${bug}"
+        else fail "${pair}: quality of a bitstring is ${got}"; fi
+    done
+done
+
+DOCKER_ARGS=()
 
 # ---- security: the A-Profile of IEC 62351-5 ----
 # tests/secure-cases.tsv, for every pairing that declares secureAuthentication.

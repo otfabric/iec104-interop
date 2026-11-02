@@ -37,6 +37,8 @@ type session struct {
 	asdus         []object
 	confirmations []object
 	connected     bool
+	tcpUp         chan struct{} // with TLS: closed when the handshake starts
+	tcpSeen       bool
 	started       bool
 	closed        bool
 	terminated    bool
@@ -45,6 +47,14 @@ type session struct {
 	expectType    asdu.TypeID
 	expectRead    bool
 	expectIOA     int
+
+	// redundancy: this session's ASDUs also go in the list of another one,
+	// and from windowOver on an ASDU on this connection is a stray.
+	also        *session
+	windowOver  bool
+	received    int
+	strays      int
+	spontaneous int
 }
 
 func (s *session) update(f func()) {
@@ -76,6 +86,16 @@ func (s *session) waitFor(cond func() bool, timeout time.Duration) bool {
 	}
 }
 
+// handshakeStarted records that the TCP connection of a TLS session is up.
+func (s *session) handshakeStarted() {
+	s.update(func() {
+		if !s.tcpSeen {
+			s.tcpSeen = true
+			close(s.tcpUp)
+		}
+	})
+}
+
 func (s *session) isClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -85,8 +105,19 @@ func (s *session) isClosed() bool {
 func (s *session) onASDU(a *asdu.ASDU) error {
 	doc := asduJSON(a)
 	cot := int(a.Coa.Cause)
+	if s.also != nil {
+		s.also.update(func() { s.also.asdus = append(s.also.asdus, doc) })
+	}
 	s.update(func() {
 		s.asdus = append(s.asdus, doc)
+		if s.windowOver {
+			s.strays++
+		} else {
+			s.received++
+		}
+		if cot == int(asdu.Spontaneous) {
+			s.spontaneous++
+		}
 		switch {
 		case s.expectType != 0 && a.Type == s.expectType:
 			unknown := cot >= 44 && cot <= 47
@@ -164,6 +195,27 @@ func (w withOriginator) Send(a *asdu.ASDU) error {
 func stopConfirmed(c *cs104.Client) bool {
 	probe := asdu.NewASDU(c.Params(), asdu.Identifier{})
 	return errors.Is(c.Send(probe), cs104.ErrNotActive)
+}
+
+// stopTransfer sends STOPDT act and waits for STOPDT con; code is the error
+// without one.
+func stopTransfer(c *cs104.Client, s *session, timeout time.Duration, code string) error {
+	c.SendStopDt()
+	deadline := time.Now().Add(timeout)
+	for !stopConfirmed(c) {
+		if s.isClosed() {
+			return failf("connection-lost", "connection closed while waiting for STOPDT con")
+		}
+		if time.Now().After(deadline) {
+			return failf(code, "no STOPDT con from the station")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// A connection that just dropped also reads as "not active".
+	if s.waitFor(func() bool { return false }, 50*time.Millisecond); s.isClosed() {
+		return failf("connection-lost", "connection closed while waiting for STOPDT con")
+	}
+	return nil
 }
 
 // processCommand is a process command of the contract, parsed once and sent
@@ -282,6 +334,8 @@ func runClient(op string, a *args) (int, error) {
 	var (
 		qoi, qcc           = 20, 5
 		ioa, hold, maxASDU int
+		name, size, secSz  int
+		switchover         string
 		duration           = 1000
 		clock              = time.Now()
 		mode               = "direct"
@@ -320,6 +374,16 @@ func runClient(op string, a *args) (int, error) {
 		if duration, err = a.num("--duration-ms", 1000); err == nil {
 			maxASDU, err = a.num("--max-asdus", 0)
 		}
+	case "file-put":
+		if ioa, name, size, secSz, err = parseFilePut(a); err != nil {
+			return 0, err
+		}
+	case "file-dir":
+	case "redundancy":
+		switchover = a.str("--switchover", "stopdt")
+		if switchover != "stopdt" && switchover != "takeover" {
+			err = usagef("redundancy: --switchover must be stopdt or takeover")
+		}
 	default:
 		err = usagef("client: unknown operation %s", op)
 	}
@@ -330,41 +394,75 @@ func runClient(op string, a *args) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	tlsConfig, err := clientTLS(a)
+	if err != nil {
+		return 0, err
+	}
 	if err := a.finish("client " + op); err != nil {
 		return 0, err
 	}
-	// go-iecp5 dials with t0, which it wants between 1 and 255 seconds.
-	cfg.ConnectTimeout0 = min(max(connectTimeout, cs104.ConnectTimeout0Min), cs104.ConnectTimeout0Max)
+	// go-iecp5 dials with t0, which it wants between 1 and 255 seconds. With TLS
+	// that covers the handshake as well, so it must outlast both of the times
+	// the contract has; the adapter watches each itself.
+	dialTimeout := connectTimeout
+	scheme := "tcp://"
+	if tlsConfig != nil {
+		dialTimeout += timeout
+		scheme = "tls://"
+	}
+	cfg.ConnectTimeout0 = min(max(dialTimeout, cs104.ConnectTimeout0Min), cs104.ConnectTimeout0Max)
 
 	begin := time.Now()
-	s := &session{changed: make(chan struct{})}
+	newSession := func() *session { return &session{changed: make(chan struct{}), tcpUp: make(chan struct{})} }
+	s := newSession()
 	lib := newLibraryLog()
 	connectFailed := lib.seen("connect failed, %v")
 	params := *asdu.ParamsWide
 
 	opt := cs104.NewOption().SetConfig(cfg).SetParams(&params).SetAutoReconnect(false)
-	if err := opt.AddRemoteServer("tcp://" + net.JoinHostPort(host, strconv.Itoa(port))); err != nil {
+	if err := opt.AddRemoteServer(scheme + net.JoinHostPort(host, strconv.Itoa(port))); err != nil {
 		return 0, usagef("client: --host %s: %v", host, err)
 	}
-	c := cs104.NewClient(s, opt)
-	c.LogMode(true)
-	c.SetLogProvider(lib)
-	c.SetOnConnectHandler(func(c *cs104.Client) {
-		s.update(func() { s.connected = true })
-		c.SendStartDt()
-	})
-	c.SetServerActiveHandler(func(*cs104.Client) { s.update(func() { s.started = true }) })
-	c.SetConnectionLostHandler(func(c *cs104.Client) {
-		// Without this go-iecp5 dials again half a second later, whatever
-		// SetAutoReconnect says: that only covers a failed dial.
-		_ = c.Close()
-		s.update(func() { s.closed = true })
-	})
+	newClient := func(s *session, lib *libraryLog) *cs104.Client {
+		if tlsConfig != nil {
+			own := tlsConfig.Clone()
+			own.ClientSessionCache = handshakeWatch{s.handshakeStarted}
+			opt.SetTLSConfig(own) // the client takes a copy of the options
+		}
+		c := cs104.NewClient(s, opt)
+		c.LogMode(true)
+		c.SetLogProvider(lib)
+		c.SetOnConnectHandler(func(*cs104.Client) { s.update(func() { s.connected = true }) })
+		c.SetServerActiveHandler(func(*cs104.Client) { s.update(func() { s.started = true }) })
+		c.SetConnectionLostHandler(func(c *cs104.Client) {
+			// Without this go-iecp5 dials again half a second later, whatever
+			// SetAutoReconnect says: that only covers a failed dial.
+			_ = c.Close()
+			s.update(func() { s.closed = true })
+		})
+		return c
+	}
+	c := newClient(s, lib)
 	conn := withOriginator{c, oa}
+	// The standby of a redundancy operation.
+	var group *redundancyGroup
+	if op == "redundancy" {
+		ss := newSession()
+		ss.also = s
+		slib := newLibraryLog()
+		group = &redundancyGroup{
+			switchover: switchover, primary: c, ps: s, plog: lib,
+			standby: newClient(ss, slib), ss: ss, slog: slib, oa: oa,
+		}
+	}
+	put := &filePut{ioa: ioa, name: name, size: size, sectionSize: secSz, data: fileOctets(ioa, size)}
+	directory := []object{}
 
 	exitCode := exitOperationFailed
 	stopdt := false
-	operation := func() error {
+	// connect dials and waits for the outcome, which go-iecp5 only logs when
+	// it is a failure.
+	connect := func(c *cs104.Client, s *session, failed <-chan struct{}) error {
 		if err := c.Start(); err != nil {
 			exitCode = exitConnectFailed
 			return failf("connect-failed", "cannot connect to the station: %v", err)
@@ -374,15 +472,54 @@ func runClient(op string, a *args) (int, error) {
 			s.waitFor(func() bool { return s.connected }, cfg.ConnectTimeout0+2*time.Second)
 			close(up)
 		}()
+		if tlsConfig != nil {
+			select {
+			case <-s.tcpUp:
+			case <-failed:
+			case <-time.After(connectTimeout):
+			}
+			select {
+			case <-s.tcpUp:
+			default:
+				exitCode = exitConnectFailed
+				return failf("connect-failed", "cannot connect to the station")
+			}
+			select {
+			case <-up:
+			case <-failed:
+			case <-time.After(timeout):
+			}
+			if !s.waitFor(func() bool { return s.connected }, 0) {
+				return failf("tls-failed", "no TLS session with the station")
+			}
+			return nil
+		}
 		select {
 		case <-up:
-		case <-connectFailed:
+		case <-failed:
 		}
 		if !s.waitFor(func() bool { return s.connected }, 0) {
 			exitCode = exitConnectFailed
 			return failf("connect-failed", "cannot connect to the station")
 		}
+		return nil
+	}
+	operation := func() error {
+		if err := connect(c, s, connectFailed); err != nil {
+			return err
+		}
+		if group != nil {
+			// Both are established before anything is started.
+			if err := connect(group.standby, group.ss, group.slog.seen("connect failed, %v")); err != nil {
+				return err
+			}
+		}
+		c.SendStartDt()
 		if !s.waitFor(func() bool { return s.started }, timeout) {
+			// With TLS 1.3 a client learns only here that its certificate was refused.
+			if tlsConfig != nil {
+				return failf("tls-failed", "no STARTDT con over the TLS session")
+			}
 			if s.isClosed() {
 				return failf("connection-lost", "connection closed while waiting for STARTDT con")
 			}
@@ -400,20 +537,8 @@ func runClient(op string, a *args) (int, error) {
 			if s.isClosed() {
 				return failf("connection-lost", "connection closed while idle")
 			}
-			c.SendStopDt()
-			deadline := time.Now().Add(timeout)
-			for !stopConfirmed(c) {
-				if s.isClosed() {
-					return failf("connection-lost", "connection closed while waiting for STOPDT con")
-				}
-				if time.Now().After(deadline) {
-					return failf("stopdt-timeout", "no STOPDT con from the station")
-				}
-				time.Sleep(5 * time.Millisecond)
-			}
-			// A connection that just dropped also reads as "not active".
-			if s.waitFor(func() bool { return false }, 50*time.Millisecond); s.isClosed() {
-				return failf("connection-lost", "connection closed while waiting for STOPDT con")
+			if err := stopTransfer(c, s, timeout, "stopdt-timeout"); err != nil {
+				return err
 			}
 			stopdt = true
 		case "interrogate":
@@ -497,6 +622,13 @@ func runClient(op string, a *args) (int, error) {
 					err = s.awaitTermination(timeout)
 				}
 			}
+		case "file-put":
+			err = runFilePut(s, conn, ca, oa, timeout, put)
+		case "file-dir":
+			err = runFileDir(s, conn, ca, oa, timeout, &directory)
+		case "redundancy":
+			err = group.run(ca, timeout)
+			stopdt = group.stopConfirmed
 		default: // monitor
 			s.waitFor(func() bool { return maxASDU > 0 && len(s.asdus) >= maxASDU }, time.Duration(duration)*time.Millisecond)
 			if s.isClosed() {
@@ -516,6 +648,15 @@ func runClient(op string, a *args) (int, error) {
 
 	err = operation()
 	_ = c.Close()
+	if group != nil {
+		_ = group.standby.Close()
+		// Whatever else happened: an I frame outside the time a connection was
+		// started is the error of this operation.
+		if n := group.strayCount(); n > 0 {
+			err = failf("failed", "%d I frames arrived on a connection that was not started", n)
+			exitCode = exitOperationFailed
+		}
+	}
 
 	r := object{
 		"schemaVersion": schemaVersion,
@@ -536,15 +677,27 @@ func runClient(op string, a *args) (int, error) {
 		r["error"] = object{"code": f.code, "message": f.message}
 	}
 	s.mu.Lock()
-	r["connected"] = s.connected
+	r["connected"] = s.connected || s.tcpSeen
+	if tlsConfig != nil {
+		r["tls"] = s.started
+	}
 	r["startdtConfirmed"] = s.started
-	if op == "connect" {
+	if op == "connect" || op == "redundancy" {
 		r["stopdtConfirmed"] = stopdt
 	}
 	r["confirmations"] = append([]object{}, s.confirmations...)
 	r["terminated"] = s.terminated
 	r["asdus"] = append([]object{}, s.asdus...)
 	s.mu.Unlock()
+	if group != nil {
+		group.report(r)
+	}
+	switch op {
+	case "file-put":
+		r["file"] = put.result()
+	case "file-dir":
+		r["directory"] = directory
+	}
 	r["elapsedMs"] = time.Since(begin).Milliseconds()
 	emit(r)
 	return exitCode, nil

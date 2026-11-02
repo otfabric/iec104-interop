@@ -40,9 +40,10 @@ public final class Main {
     private static final String USAGE = String.join("\n",
             "usage: iec104-interop <command>",
             "",
-            "  server [--fixture PATH] [--bind-address ADDR] [--port N] [--ready-file PATH] [APCI]",
+            "  server [--fixture PATH] [--bind-address ADDR] [--port N] [--ready-file PATH] [--redundancy-group]",
+            "         [APCI] [TLS]",
             "  client <operation> --host HOST [--port N] [--common-address N] [--originator-address N]",
-            "         [--timeout-ms N] [--connect-timeout-ms N] [--collect-ms N] [APCI] [operation flags]",
+            "         [--timeout-ms N] [--connect-timeout-ms N] [--collect-ms N] [APCI] [TLS] [operation flags]",
             "      connect             [--hold-ms N]",
             "      interrogate         [--qoi N]",
             "      counter-interrogate [--qcc N]",
@@ -53,11 +54,15 @@ public final class Main {
             "                          [--qualifier N] [--with-time]",
             "      monitor             [--duration-ms N] [--max-asdus N]",
             "      file-get            --ioa N [--name N]",
+            "      file-put            --ioa N --size N [--name N] [--section-size N]",
+            "      file-dir",
+            "      redundancy          [--switchover stopdt|takeover]",
             "  print-capabilities",
             "  print-fixture [NAME]",
             "  version",
             "",
             "  APCI: [--k N] [--w N] [--t0 S] [--t1 S] [--t2 S] [--t3 S]",
+            "  TLS:  [--tls --tls-cert PATH --tls-key PATH --tls-trust PATH]",
             "",
             "See docs/CONTAINER_CONTRACT.md in https://github.com/otfabric/iec104-interop",
             "");
@@ -125,7 +130,7 @@ public final class Main {
 
         JsonObject f = new JsonObject();
         f.addProperty("generalInterrogation", true);
-        f.addProperty("groupInterrogation", false);
+        f.addProperty("groupInterrogation", true);
         f.addProperty("counterInterrogation", true);
         f.addProperty("read", true);
         f.addProperty("clockSync", true);
@@ -137,14 +142,22 @@ public final class Main {
         f.addProperty("spontaneousOnCommand", true);
         f.addProperty("apciParameters", true);
         f.addProperty("multipleConnections", true);
-        f.addProperty("pointQualityOnBitstring", false);
-        f.addProperty("tls", false);
+        f.addProperty("pointQualityOnBitstring", true);
+        f.addProperty("tls", true);
+        f.addProperty("tlsServer", true);
+        f.addProperty("tlsClient", true);
         // The server reports STARTDT and STOPDT as events.
         f.addProperty("dataTransferEvents", true);
-        // The client can download a file; the server does not serve files.
         f.addProperty("fileTransfer", true);
-        f.addProperty("fileServer", false);
+        // j60870 has no procedure of file transfer; the adapter runs it (FileStation).
+        f.addProperty("fileServer", true);
         f.addProperty("fileClient", true);
+        f.addProperty("fileUploadServer", true);
+        f.addProperty("fileUploadClient", true);
+        f.addProperty("fileDirectoryServer", true);
+        f.addProperty("fileDirectoryClient", true);
+        f.addProperty("redundancyServer", true);
+        f.addProperty("redundancyClient", true);
         f.addProperty("secureAuthentication", false);
         c.add("features", f);
 
@@ -153,7 +166,7 @@ public final class Main {
         c.add("commandTypes",
                 strings("C_SC_NA_1", "C_DC_NA_1", "C_RC_NA_1", "C_SE_NA_1", "C_SE_NB_1", "C_SE_NC_1"));
         c.add("clientOperations", strings("connect", "interrogate", "counter-interrogate", "read", "clock-sync",
-                "test-command", "command", "monitor", "file-get"));
+                "test-command", "command", "monitor", "file-get", "file-put", "file-dir", "redundancy"));
         emit(c);
         return EXIT_OK;
     }

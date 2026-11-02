@@ -9,7 +9,18 @@
 #include <strings.h>
 #include <time.h>
 
+#include "hal_thread.h"
 #include "hal_time.h"
+
+/* One of the two connections of the redundancy operation. */
+typedef struct {
+    bool startdtCon;
+    bool stopdtCon;
+    bool started; /* between STARTDT con and what ends it: see runRedundancy */
+    bool closed;
+    int asdus;    /* I frames received while started */
+    bool gotSpontaneous;
+} Link;
 
 /* Everything the receive thread and the main thread share. */
 static struct {
@@ -21,6 +32,11 @@ static struct {
     bool startdtCon;
     bool stopdtCon;
     bool closed;
+    bool opened;          /* the connection's thread is through the handshake */
+    bool tcpUp;           /* --tls: TCP is connected, the handshake has begun */
+    bool tcpFailed;       /* no TCP connection */
+    bool handshakeFailed;
+    bool handshakeStuck;  /* the connection's thread cannot be joined */
     bool terminated;
     int negativeCot; /* cause of the last refusal, 0 when none */
     bool readAnswered;
@@ -30,6 +46,12 @@ static struct {
     struct FileEvent* fileEvents; /* file transfer ASDUs, for the file operation */
     int fileEventCount;
     int fileEventNext;
+    cJSON* directory;     /* file-dir: the entries received */
+    bool directoryDone;   /* the entry with the LFD bit arrived */
+    Link links[2];        /* redundancy: the primary and the standby */
+    bool takeover;
+    bool primaryMayClose;
+    int strays;           /* I frames on a connection that is not started */
 } st = { .lock = PTHREAD_MUTEX_INITIALIZER, .changed = PTHREAD_COND_INITIALIZER };
 
 /* One received file transfer ASDU, reduced to what the procedure needs. */
@@ -39,7 +61,7 @@ typedef struct FileEvent {
     bool negative;
     int nos;
     int length;    /* LOF of file ready and section ready */
-    int qualifier; /* FRQ, SRQ, LSQ */
+    int qualifier; /* FRQ, SRQ, SCQ, LSQ, AFQ */
     int checksum;
     int size; /* of data */
     uint8_t data[256];
@@ -70,6 +92,14 @@ static void pushFileEvent(CS101_ASDU asdu)
         e->length = (int)SectionReady_getLengthOfSection((SectionReady)io);
         e->qualifier = SectionReady_getSRQ((SectionReady)io);
         break;
+    case F_SC_NA_1:
+        e->nos = FileCallOrSelect_getNameOfSection((FileCallOrSelect)io);
+        e->qualifier = FileCallOrSelect_getSCQ((FileCallOrSelect)io);
+        break;
+    case F_AF_NA_1:
+        e->nos = FileACK_getNameOfSection((FileACK)io);
+        e->qualifier = FileACK_getAFQ((FileACK)io);
+        break;
     case F_LS_NA_1:
         e->nos = FileLastSegmentOrSection_getNameOfSection((FileLastSegmentOrSection)io);
         e->qualifier = FileLastSegmentOrSection_getLSQ((FileLastSegmentOrSection)io);
@@ -86,25 +116,94 @@ static void pushFileEvent(CS101_ASDU asdu)
     InformationObject_destroy(io);
 }
 
+/* Called with st.lock held. */
+static void pushDirectory(CS101_ASDU asdu)
+{
+    for (int i = 0; i < CS101_ASDU_getNumberOfElements(asdu); i++) {
+        InformationObject io = CS101_ASDU_getElement(asdu, i);
+        if (io == NULL)
+            return;
+        cJSON* entry = cJSON_CreateObject();
+        cJSON_AddNumberToObject(entry, "ioa", InformationObject_getObjectAddress(io));
+        cJSON_AddNumberToObject(entry, "nof", FileDirectory_getNOF((FileDirectory)io));
+        cJSON_AddNumberToObject(entry, "lof", FileDirectory_getLengthOfFile((FileDirectory)io));
+        cJSON_AddNumberToObject(entry, "sof", FileDirectory_getSOF((FileDirectory)io));
+        cJSON_AddItemToArray(st.directory, entry);
+        if (FileDirectory_getLFD((FileDirectory)io))
+            st.directoryDone = true;
+        InformationObject_destroy(io);
+    }
+}
+
+/* Called with st.lock held. */
+static void refreshClosed(void)
+{
+    st.closed = st.links[1].closed || (st.links[0].closed && !st.primaryMayClose);
+}
+
+/* A connection of the redundancy operation. Called with st.lock held. */
+static void linkEvent(Link* l, CS104_ConnectionEvent ev)
+{
+    switch (ev) {
+    case CS104_CONNECTION_STARTDT_CON_RECEIVED:
+        l->startdtCon = l->started = true;
+        if (l == &st.links[0])
+            st.startdtCon = true;
+        else if (st.takeover)
+            st.links[0].started = false;
+        break;
+    case CS104_CONNECTION_STOPDT_CON_RECEIVED:
+        l->stopdtCon = true;
+        l->started = false;
+        if (l == &st.links[1])
+            st.stopdtCon = true;
+        break;
+    case CS104_CONNECTION_FAILED:
+    case CS104_CONNECTION_CLOSED:
+        l->closed = true;
+        refreshClosed();
+        break;
+    default:
+        break;
+    }
+}
+
 static void connectionHandler(void* parameter, CS104_Connection connection, CS104_ConnectionEvent ev)
 {
-    (void)parameter;
     (void)connection;
     pthread_mutex_lock(&st.lock);
     switch (ev) {
-    case CS104_CONNECTION_STARTDT_CON_RECEIVED: st.startdtCon = true; break;
-    case CS104_CONNECTION_STOPDT_CON_RECEIVED: st.stopdtCon = true; break;
-    case CS104_CONNECTION_CLOSED:
-    case CS104_CONNECTION_FAILED: st.closed = true; break;
+    case CS104_CONNECTION_OPENED: st.opened = true; break;
+    case CS104_CONNECTION_STARTDT_CON_RECEIVED: if (parameter == NULL) st.startdtCon = true; break;
+    case CS104_CONNECTION_STOPDT_CON_RECEIVED: if (parameter == NULL) st.stopdtCon = true; break;
+    case CS104_CONNECTION_FAILED: st.tcpFailed = true; /* fall through */
+    case CS104_CONNECTION_CLOSED: if (parameter == NULL) st.closed = true; break;
     default: break;
     }
+    if (parameter != NULL)
+        linkEvent(parameter, ev);
     pthread_cond_broadcast(&st.changed);
+    pthread_mutex_unlock(&st.lock);
+}
+
+/* Sees every frame before lib60870 looks at it, and it delivers an I frame
+ * whatever the state of the connection is. */
+static void rawMessageHandler(void* parameter, uint8_t* message, int size, bool sent)
+{
+    Link* l = parameter;
+    if (sent || size < 7 || (message[2] & 1) != 0)
+        return;
+    pthread_mutex_lock(&st.lock);
+    if (l->started)
+        l->asdus++;
+    else
+        st.strays++;
     pthread_mutex_unlock(&st.lock);
 }
 
 static bool asduHandler(void* parameter, int address, CS101_ASDU asdu)
 {
-    (void)parameter;
+    Link* link = parameter;
     (void)address;
     cJSON* j = asduToJson(asdu);
     IEC60870_5_TypeID type = CS101_ASDU_getTypeID(asdu);
@@ -113,7 +212,11 @@ static bool asduHandler(void* parameter, int address, CS101_ASDU asdu)
     pthread_mutex_lock(&st.lock);
     cJSON_AddItemToArray(st.asdus, j);
     st.asduCount++;
+    if (link != NULL && cot == CS101_COT_SPONTANEOUS)
+        link->gotSpontaneous = true;
     pushFileEvent(asdu);
+    if (type == F_DR_TA_1 && cot == CS101_COT_REQUEST)
+        pushDirectory(asdu);
     if (st.expectType != 0 && type == st.expectType) {
         bool unknown = cot >= CS101_COT_UNKNOWN_TYPE_ID && cot <= CS101_COT_UNKNOWN_IOA;
         if (cot == CS101_COT_ACTIVATION_CON || cot == CS101_COT_DEACTIVATION_CON || unknown) {
@@ -173,6 +276,9 @@ static bool waitFor(Predicate pred, int arg, int timeoutMs)
 }
 
 static bool hasStartDt(int a) { (void)a; return st.startdtCon; }
+static bool hasLinkStartDt(int i) { return st.links[i].startdtCon; }
+static bool hasLinkStopDt(int i) { return st.links[i].stopdtCon; }
+static bool hasQueuedEvent(int i) { return st.links[i].gotSpontaneous; }
 static bool hasStopDt(int a) { (void)a; return st.stopdtCon; }
 static bool hasConfirmations(int n) { return cJSON_GetArraySize(st.confirmations) >= n; }
 static bool hasTermination(int a) { (void)a; return st.terminated || st.negativeCot != 0; }
@@ -180,6 +286,9 @@ static bool hasReadAnswer(int a) { (void)a; return st.readAnswered || st.negativ
 static bool hasAsdus(int n) { return n > 0 && st.asduCount >= n; }
 static bool never(int a) { (void)a; return false; }
 static bool hasFileEvent(int a) { (void)a; return st.fileEventNext < st.fileEventCount; }
+static bool hasDirectoryOutcome(int a) { return st.directoryDone || hasFileEvent(a); }
+static bool hasTcpOutcome(int a) { (void)a; return st.tcpUp || st.tcpFailed; }
+static bool hasHandshakeOutcome(int a) { (void)a; return st.opened || st.handshakeFailed; }
 
 static bool parseBool(const char* s, bool* out)
 {
@@ -294,6 +403,61 @@ static bool awaitTermination(int timeoutMs)
     return true;
 }
 
+/* ---- transport security ---- */
+
+/*
+ * lib60870-C runs the handshake inside TLSSocket_create on the connection's
+ * thread, in a loop without a timeout (hal/tls/mbedtls3/tls_mbedtls.c), holding
+ * the lock that CS104_Connection_connect polls (iec60870/cs104/cs104_connection.c),
+ * and tells the connection handler nothing when it fails. The linker option
+ * --wrap puts this in between, which is how a client knows that TCP is up, that
+ * the handshake failed, and when to stop waiting for it.
+ */
+void* __real_TLSSocket_create(void* socket, void* configuration, bool storeClientCert);
+void* __wrap_TLSSocket_create(void* socket, void* configuration, bool storeClientCert);
+
+void* __wrap_TLSSocket_create(void* socket, void* configuration, bool storeClientCert)
+{
+    pthread_mutex_lock(&st.lock);
+    st.tcpUp = true;
+    pthread_cond_broadcast(&st.changed);
+    pthread_mutex_unlock(&st.lock);
+
+    void* created = __real_TLSSocket_create(socket, configuration, storeClientCert);
+
+    pthread_mutex_lock(&st.lock);
+    st.handshakeFailed = created == NULL;
+    pthread_cond_broadcast(&st.changed);
+    pthread_mutex_unlock(&st.lock);
+    return created;
+}
+
+/* Establishes the connection, up to where STARTDT can be sent. */
+static bool establish(CS104_Connection con, bool tls, int connectTimeoutMs, int timeoutMs, bool* connected)
+{
+    if (!tls) {
+        if (!CS104_Connection_connect(con))
+            return failOp("connect-failed", "cannot connect to the station%.0d", 0);
+        *connected = true;
+        return true;
+    }
+    pthread_mutex_lock(&st.lock);
+    st.opened = st.tcpUp = st.tcpFailed = st.handshakeFailed = false;
+    pthread_mutex_unlock(&st.lock);
+    CS104_Connection_connectAsync(con);
+    /* The socket has this timeout of its own: a second more is only a margin. */
+    if (!waitFor(hasTcpOutcome, 0, connectTimeoutMs + 1000) || !st.tcpUp)
+        return failOp("connect-failed", "cannot connect to the station%.0d", 0);
+    *connected = true;
+    if (!waitFor(hasHandshakeOutcome, 0, timeoutMs)) {
+        st.handshakeStuck = true;
+        return failOp("tls-failed", "no TLS session within %d ms", timeoutMs);
+    }
+    if (!st.opened)
+        return failOp("tls-failed", "the TLS handshake failed%.0d", 0);
+    return true;
+}
+
 /* ---- the file operation: download in monitor direction ---- */
 
 static bool sendFileCall(CS104_Connection con, int oa, int ca, int ioa, int nof, int nos, int scq)
@@ -336,6 +500,9 @@ static bool nextFileEvent(FileEvent* out, int timeoutMs, const char* what)
     pthread_mutex_unlock(&st.lock);
     return true;
 }
+
+/* A segment carries at most this: docs/CONTAINER_CONTRACT.md. */
+#define MAX_SEGMENT 236
 
 typedef struct {
     uint8_t* data;
@@ -408,6 +575,191 @@ static bool downloadFile(CS104_Connection con, int oa, int ca, int ioa, int nof,
     }
 }
 
+/* ---- file upload: the procedure in control direction ---- */
+
+/* The window can be full, and sending a segment is the one thing that fills it.
+ * Takes ownership of io. */
+static bool sendFileObject(CS104_Connection con, int oa, int ca, CS101_CauseOfTransmission cot, InformationObject io,
+    int timeoutMs)
+{
+    CS101_ASDU a = CS101_ASDU_create(CS104_Connection_getAppLayerParameters(con), false, cot, oa, ca, false, false);
+    CS101_ASDU_addInformationObject(a, io);
+    uint64_t deadline = Hal_getTimeInMs() + (uint64_t)timeoutMs;
+    bool sent;
+    while (!(sent = CS104_Connection_sendASDU(con, a))) {
+        if (st.closed) {
+            failOp("connection-lost", "connection closed during the file transfer%.0d", 0);
+            break;
+        }
+        if (Hal_getTimeInMs() > deadline) {
+            failOp("timeout", "the station did not acknowledge within %d ms", timeoutMs);
+            break;
+        }
+        Thread_sleep(1);
+    }
+    InformationObject_destroy(io);
+    CS101_ASDU_destroy(a);
+    return sent;
+}
+
+static bool isRefusal(const FileEvent* e)
+{
+    int afq = e->qualifier & 0x0f;
+    return e->negative || (e->cot >= CS101_COT_UNKNOWN_TYPE_ID && e->cot <= CS101_COT_UNKNOWN_IOA) ||
+        (e->type == F_FR_NA_1 && (e->qualifier & 0x80)) || (e->type == F_AF_NA_1 && (afq == 2 || afq == 4));
+}
+
+/* Waits for the next answer of the station, which must be of type want with
+ * this qualifier (in its low four bits). */
+static bool awaitFileAnswer(FileEvent* e, IEC60870_5_TypeID want, int qualifier, int timeoutMs, const char* what)
+{
+    if (!nextFileEvent(e, timeoutMs, what))
+        return false;
+    if (isRefusal(e))
+        return failOp("negative-confirmation", "the station refused the file (cause %d)", e->cot);
+    if (e->type != want || (e->qualifier & 0x0f) != qualifier)
+        return failOp("failed", "unexpected answer of type %d", e->type);
+    return true;
+}
+
+/* Announce the file, and send what the station calls. See docs/CONTAINER_CONTRACT.md. */
+static bool uploadFile(CS104_Connection con, int oa, int ca, int ioa, int nof, int sectionSize, int timeoutMs,
+    Download* d)
+{
+    FileEvent e;
+    d->data = malloc((size_t)d->length);
+    uint8_t fileSum = 0;
+    for (int i = 0; i < d->length; i++) {
+        d->data[i] = fileOctet(ioa, i);
+        fileSum += d->data[i];
+    }
+
+    if (!sendFileObject(con, oa, ca, CS101_COT_FILE_TRANSFER,
+            (InformationObject)FileReady_create(NULL, ioa, (uint16_t)nof, (uint32_t)d->length, true), timeoutMs))
+        return false;
+    if (!awaitFileAnswer(&e, F_SC_NA_1, 2, timeoutMs, "the call of the file"))
+        return false;
+
+    int nos = 0;
+    for (int start = 0; start < d->length; start += sectionSize) {
+        int length = d->length - start < sectionSize ? d->length - start : sectionSize;
+        nos++;
+        if (!sendFileObject(con, oa, ca, CS101_COT_FILE_TRANSFER,
+                (InformationObject)SectionReady_create(NULL, ioa, (uint16_t)nof, (uint8_t)nos, (uint32_t)length, false),
+                timeoutMs))
+            return false;
+        if (!awaitFileAnswer(&e, F_SC_NA_1, 6, timeoutMs, "the call of the section"))
+            return false;
+        if (e.nos != nos)
+            return failOp("failed", "the station called another section than %d", nos);
+        d->sections++;
+        uint8_t sum = 0;
+        for (int sent = 0; sent < length;) {
+            int size = length - sent < MAX_SEGMENT ? length - sent : MAX_SEGMENT;
+            uint8_t* data = d->data + start + sent;
+            for (int i = 0; i < size; i++)
+                sum += data[i];
+            if (!sendFileObject(con, oa, ca, CS101_COT_FILE_TRANSFER,
+                    (InformationObject)FileSegment_create(NULL, ioa, (uint16_t)nof, (uint8_t)nos, data, (uint8_t)size),
+                    timeoutMs))
+                return false;
+            sent += size;
+        }
+        d->received += length;
+        if (!sendFileObject(con, oa, ca, CS101_COT_FILE_TRANSFER,
+                (InformationObject)FileLastSegmentOrSection_create(NULL, ioa, (uint16_t)nof, (uint8_t)nos, 3, sum),
+                timeoutMs))
+            return false;
+        if (!awaitFileAnswer(&e, F_AF_NA_1, 3, timeoutMs, "the acknowledgement of the section"))
+            return false;
+    }
+
+    /* One more than the number of sections, as lib60870 itself does on a download. */
+    if (!sendFileObject(con, oa, ca, CS101_COT_FILE_TRANSFER,
+            (InformationObject)FileLastSegmentOrSection_create(NULL, ioa, (uint16_t)nof, (uint8_t)(nos + 1), 1, fileSum),
+            timeoutMs))
+        return false;
+    return awaitFileAnswer(&e, F_AF_NA_1, 1, timeoutMs, "the acknowledgement of the file");
+}
+
+/* ---- the call of the directory ---- */
+
+static bool callDirectory(CS104_Connection con, int oa, int ca, int timeoutMs)
+{
+    if (!sendFileObject(con, oa, ca, CS101_COT_REQUEST,
+            (InformationObject)FileCallOrSelect_create(NULL, 0, 0, 0, 0), timeoutMs))
+        return false;
+    if (!waitFor(hasDirectoryOutcome, 0, timeoutMs))
+        return st.closed ? failOp("connection-lost", "connection closed during the directory%.0d", 0)
+                         : failOp("timeout", "no last entry of the directory%.0d", 0);
+    if (st.directoryDone)
+        return true;
+    FileEvent e;
+    if (!nextFileEvent(&e, timeoutMs, "the directory"))
+        return false;
+    if (isRefusal(&e))
+        return failOp("negative-confirmation", "the station refused the call (cause %d)", e.cot);
+    return failOp("failed", "unexpected answer of type %d", e.type);
+}
+
+/* ---- redundancy: two connections, the second taking over ---- */
+
+/* C_IC_NA_1, QOI 20, until its activation termination. */
+static bool interrogateOn(CS104_Connection con, int ca, int confirmation, int timeoutMs)
+{
+    st.expectType = C_IC_NA_1;
+    pthread_mutex_lock(&st.lock);
+    st.terminated = false;
+    pthread_mutex_unlock(&st.lock);
+    CS104_Connection_sendInterrogationCommand(con, CS101_COT_ACTIVATION, ca, IEC60870_QOI_STATION);
+    return awaitConfirmation(confirmation, timeoutMs) && awaitTermination(timeoutMs);
+}
+
+static void setPrimaryMayClose(void)
+{
+    pthread_mutex_lock(&st.lock);
+    st.primaryMayClose = true;
+    refreshClosed();
+    pthread_mutex_unlock(&st.lock);
+}
+
+/* The steps of docs/CONTAINER_CONTRACT.md, from where the primary is started. */
+static bool runRedundancy(CS104_Connection primary, CS104_Connection standby, int ca, bool hasTls, int timeoutMs)
+{
+    if (!interrogateOn(primary, ca, 1, timeoutMs))
+        return false;
+
+    if (st.takeover) {
+        setPrimaryMayClose();
+    } else {
+        CS104_Connection_sendStopDT(primary);
+        if (!waitFor(hasLinkStopDt, 0, timeoutMs))
+            return st.closed ? failOp("connection-lost", "the primary closed before its STOPDT con%.0d", 0)
+                             : failOp("stopdt-timeout", "no STOPDT con on the primary%.0d", 0);
+    }
+
+    CS104_Connection_sendStartDT(standby);
+    if (!waitFor(hasLinkStartDt, 1, timeoutMs)) {
+        if (st.closed)
+            return failOp(hasTls ? "tls-failed" : "connection-lost", "a connection closed before the STARTDT con of the standby%.0d", 0);
+        return failOp(hasTls ? "tls-failed" : "startdt-timeout", "no STARTDT con on the standby%.0d", 0);
+    }
+    setPrimaryMayClose();
+
+    if (!st.takeover && !waitFor(hasQueuedEvent, 1, timeoutMs))
+        return st.closed ? failOp("connection-lost", "the standby closed before the queued event%.0d", 0)
+                         : failOp("timeout", "no event with cause 3 on the standby%.0d", 0);
+
+    if (!interrogateOn(standby, ca, 2, timeoutMs))
+        return false;
+
+    CS104_Connection_sendStopDT(standby);
+    if (!waitFor(hasLinkStopDt, 1, timeoutMs))
+        return st.closed ? failOp("connection-lost", "the standby closed before its STOPDT con%.0d", 0)
+                         : failOp("stopdt-timeout", "no STOPDT con on the standby%.0d", 0);
+    return true;
+}
+
 int runClient(const char* op, Args* args)
 {
     const char* host = argString(args, "--host", NULL);
@@ -433,9 +785,13 @@ int runClient(const char* op, Args* args)
         OP_TEST,
         OP_COMMAND,
         OP_MONITOR,
-        OP_FILE
+        OP_FILE,
+        OP_FILE_PUT,
+        OP_FILE_DIR,
+        OP_REDUNDANCY
     } kind;
-    int fileName = 1;
+    const char* switchover = "stopdt";
+    int fileName = 1, fileSectionSize = 0;
     Download download = { NULL, 0, 0, 0 };
     int qoi = 20, qcc = 5, ioa = 0, holdMs = 0, durationMs = 1000, maxAsdus = 0, qualifier = 0;
     uint64_t clockMs = Hal_getTimeInMs();
@@ -502,6 +858,33 @@ int runClient(const char* op, Args* args)
             logf_("file-get: --ioa is required; --name is 1..65535");
             return EXIT_USAGE;
         }
+    } else if (!strcmp(op, "file-put")) {
+        kind = OP_FILE_PUT;
+        if (!argInt(args, "--ioa", 0, &ioa) || !argInt(args, "--name", 1, &fileName) ||
+            !argInt(args, "--size", 0, &download.length) || !argInt(args, "--section-size", 0, &fileSectionSize))
+            return EXIT_USAGE;
+        if (fileSectionSize == 0)
+            fileSectionSize = download.length;
+        if (ioa < 1 || fileName < 1 || fileName > 65535 || download.length < 1 || download.length > 65536 ||
+            fileSectionSize < 1 || fileSectionSize > download.length) {
+            logf_("file-put: --ioa and --size (1..65536) are required; --name is 1..65535, --section-size 1..size");
+            return EXIT_USAGE;
+        }
+        /* The name of a section is one octet. */
+        if ((download.length - 1) / fileSectionSize + 1 > 255) {
+            logf_("file-put: more than 255 sections");
+            return EXIT_USAGE;
+        }
+    } else if (!strcmp(op, "file-dir")) {
+        kind = OP_FILE_DIR;
+    } else if (!strcmp(op, "redundancy")) {
+        kind = OP_REDUNDANCY;
+        switchover = argString(args, "--switchover", "stopdt");
+        if (strcmp(switchover, "stopdt") && strcmp(switchover, "takeover")) {
+            logf_("redundancy: --switchover must be stopdt or takeover");
+            return EXIT_USAGE;
+        }
+        st.takeover = !strcmp(switchover, "takeover");
     } else if (!strcmp(op, "monitor")) {
         kind = OP_MONITOR;
         if (!argInt(args, "--duration-ms", 1000, &durationMs) || !argInt(args, "--max-asdus", 0, &maxAsdus))
@@ -511,7 +894,13 @@ int runClient(const char* op, Args* args)
         return EXIT_USAGE;
     }
 
-    CS104_Connection con = CS104_Connection_create(host, port);
+    TLSConfiguration tls;
+    if (!tlsFromArgs(args, &tls))
+        return EXIT_USAGE;
+    if (tls)
+        TLSConfiguration_enableSessionResumption(tls, false); /* one process, one session */
+
+    CS104_Connection con = tls ? CS104_Connection_createSecure(host, port, tls) : CS104_Connection_create(host, port);
     struct sCS104_APCIParameters apci = *CS104_Connection_getAPCIParameters(con);
     if (!applyApciArgs(args, &apci))
         return EXIT_USAGE;
@@ -522,24 +911,46 @@ int runClient(const char* op, Args* args)
     CS104_Connection_setAPCIParameters(con, &apci);
     CS104_Connection_setConnectTimeout(con, connectTimeoutMs);
     CS104_Connection_setOriginatorAddress(con, (uint8_t)oa);
-    CS104_Connection_setConnectionHandler(con, connectionHandler, NULL);
-    CS104_Connection_setASDUReceivedHandler(con, asduHandler, NULL);
+    CS104_Connection standby = NULL;
+    if (kind == OP_REDUNDANCY) {
+        standby = tls ? CS104_Connection_createSecure(host, port, tls) : CS104_Connection_create(host, port);
+        CS104_Connection_setAPCIParameters(standby, &apci);
+        CS104_Connection_setConnectTimeout(standby, connectTimeoutMs);
+        CS104_Connection_setOriginatorAddress(standby, (uint8_t)oa);
+        CS104_Connection_setConnectionHandler(standby, connectionHandler, &st.links[1]);
+        CS104_Connection_setASDUReceivedHandler(standby, asduHandler, &st.links[1]);
+        CS104_Connection_setRawMessageHandler(standby, rawMessageHandler, &st.links[1]);
+        CS104_Connection_setRawMessageHandler(con, rawMessageHandler, &st.links[0]);
+    }
+    void* primaryLink = kind == OP_REDUNDANCY ? &st.links[0] : NULL;
+    CS104_Connection_setConnectionHandler(con, connectionHandler, primaryLink);
+    CS104_Connection_setASDUReceivedHandler(con, asduHandler, primaryLink);
 
     st.asdus = cJSON_CreateArray();
     st.confirmations = cJSON_CreateArray();
+    st.directory = cJSON_CreateArray();
     uint64_t begin = Hal_getTimeInMs();
     bool connected = false, ok = false;
     int exitCode = EXIT_OPERATION_FAILED;
 
-    if (!CS104_Connection_connect(con)) {
-        failOp("connect-failed", "cannot connect to the station%.0d", 0);
-        exitCode = EXIT_CONNECT_FAILED;
+    if (!establish(con, tls != NULL, connectTimeoutMs, timeoutMs, &connected)) {
+        if (!connected)
+            exitCode = EXIT_CONNECT_FAILED;
         goto report;
     }
-    connected = true;
+    if (standby != NULL) {
+        connected = false;
+        if (!establish(standby, tls != NULL, connectTimeoutMs, timeoutMs, &connected)) {
+            if (!connected)
+                exitCode = EXIT_CONNECT_FAILED;
+            goto report;
+        }
+    }
     CS104_Connection_sendStartDT(con);
     if (!waitFor(hasStartDt, 0, timeoutMs)) {
-        failOp("startdt-timeout", "no STARTDT con from the station%.0d", 0);
+        /* With TLS 1.3 this is also how a client learns that the station
+         * refused its certificate: the handshake ended before that. */
+        failOp(tls ? "tls-failed" : "startdt-timeout", "no STARTDT con from the station%.0d", 0);
         goto report;
     }
 
@@ -622,6 +1033,18 @@ int runClient(const char* op, Args* args)
         ok = downloadFile(con, oa, ca, ioa, fileName, timeoutMs, &download);
         break;
 
+    case OP_FILE_PUT:
+        ok = uploadFile(con, oa, ca, ioa, fileName, fileSectionSize, timeoutMs, &download);
+        break;
+
+    case OP_FILE_DIR:
+        ok = callDirectory(con, oa, ca, timeoutMs);
+        break;
+
+    case OP_REDUNDANCY:
+        ok = runRedundancy(con, standby, ca, tls != NULL, timeoutMs);
+        break;
+
     case OP_MONITOR:
         waitFor(hasAsdus, maxAsdus, durationMs);
         ok = !st.closed || failOp("connection-lost", "connection closed while monitoring%.0d", 0);
@@ -633,9 +1056,17 @@ int runClient(const char* op, Args* args)
         waitFor(never, 0, collectMs);
 
 report:
+    if (kind == OP_REDUNDANCY && st.strays > 0) {
+        ok = false;
+        failOp("failed", "%d I frames on a connection that was not started", st.strays);
+    }
     if (ok)
         exitCode = EXIT_OK;
-    CS104_Connection_destroy(con); /* closes; no callback runs after this */
+    if (!st.handshakeStuck) {
+        CS104_Connection_destroy(con); /* closes; no callback runs after this */
+        if (standby != NULL)
+            CS104_Connection_destroy(standby);
+    }
 
     cJSON* r = cJSON_CreateObject();
     cJSON_AddStringToObject(r, "schemaVersion", SCHEMA_VERSION);
@@ -651,11 +1082,13 @@ report:
     }
     cJSON_AddBoolToObject(r, "connected", connected);
     cJSON_AddBoolToObject(r, "startdtConfirmed", st.startdtCon);
-    if (kind == OP_CONNECT)
+    if (kind == OP_CONNECT || kind == OP_REDUNDANCY)
         cJSON_AddBoolToObject(r, "stopdtConfirmed", st.stopdtCon);
     cJSON_AddItemToObject(r, "confirmations", st.confirmations);
     cJSON_AddBoolToObject(r, "terminated", st.terminated);
-    if (kind == OP_FILE) {
+    if (tls)
+        cJSON_AddBoolToObject(r, "tls", st.startdtCon);
+    if (kind == OP_FILE || kind == OP_FILE_PUT) {
         cJSON* f = cJSON_AddObjectToObject(r, "file");
         char digest[65];
         sha256Hex(download.data ? download.data : (const uint8_t*)"", (size_t)download.received, digest);
@@ -665,6 +1098,16 @@ report:
         cJSON_AddNumberToObject(f, "received", download.received);
         cJSON_AddNumberToObject(f, "sections", download.sections);
         cJSON_AddStringToObject(f, "sha256", digest);
+    }
+    if (kind == OP_FILE_DIR)
+        cJSON_AddItemToObject(r, "directory", st.directory);
+    if (kind == OP_REDUNDANCY) {
+        cJSON* red = cJSON_AddObjectToObject(r, "redundancy");
+        cJSON_AddStringToObject(red, "switchover", switchover);
+        cJSON_AddNumberToObject(red, "primaryAsdus", st.links[0].asdus);
+        cJSON_AddNumberToObject(red, "standbyAsdus", st.links[1].asdus);
+        cJSON_AddNumberToObject(red, "strayAsdus", st.strays);
+        cJSON_AddBoolToObject(red, "queuedEvent", st.links[1].gotSpontaneous);
     }
     cJSON_AddItemToObject(r, "asdus", st.asdus);
     cJSON_AddNumberToObject(r, "elapsedMs", (double)(Hal_getTimeInMs() - begin));

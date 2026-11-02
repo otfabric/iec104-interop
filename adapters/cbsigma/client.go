@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"net"
@@ -50,6 +51,8 @@ type session struct {
 	fileRefused bool
 	fileLength  int
 	fileData    []byte
+	// file-dir
+	directory []object
 }
 
 func (s *session) update(f func()) {
@@ -125,6 +128,11 @@ func (s *session) onASDU(raw []byte, a *iec.ASDU, decodeErr error) {
 			s.fileLength = int(o.Length)
 		case typ == iec.FSgNa1:
 			s.fileData = append(s.fileData, o.Segment...)
+		case typ == iec.FDrTa1:
+			for _, e := range a.Objects {
+				s.directory = append(s.directory, object{"ioa": int(e.IOA), "nof": int(e.File),
+					"lof": int(e.Length), "sof": int(e.Status)})
+			}
 		}
 	})
 }
@@ -280,6 +288,9 @@ func runClient(op string, a *args) (int, error) {
 	var (
 		qoi, qcc           = 20, 5
 		ioa, hold, maxASDU int
+		fileSize, section  int
+		put                *filePut
+		switchover         = "stopdt"
 		fileName           = 1
 		duration           = 1000
 		clock              = time.Now()
@@ -326,6 +337,27 @@ func runClient(op string, a *args) (int, error) {
 		if err == nil && (ioa < 1 || ioa > 0xffffff || fileName < 1 || fileName > 65535) {
 			err = usagef("file-get: --ioa is required; --name is 1..65535")
 		}
+	case "file-put":
+		for _, f := range []struct {
+			flag string
+			to   *int
+			def  int
+		}{{"--ioa", &ioa, 0}, {"--name", &fileName, 1}, {"--size", &fileSize, 0}, {"--section-size", &section, 0}} {
+			if *f.to, err = a.num(f.flag, f.def); err != nil {
+				return 0, err
+			}
+		}
+		if section == 0 {
+			section = fileSize
+		}
+		if err = validatePut(ioa, fileName, fileSize, section); err == nil {
+			put = newFilePut(ioa, fileName, fileSize, section)
+		}
+	case "file-dir":
+	case "redundancy":
+		if switchover = a.str("--switchover", "stopdt"); switchover != "stopdt" && switchover != "takeover" {
+			err = usagef("redundancy: --switchover must be stopdt or takeover")
+		}
 	default:
 		err = usagef("client: unknown operation %s", op)
 	}
@@ -341,6 +373,10 @@ func runClient(op string, a *args) (int, error) {
 		return 0, err
 	}
 	if err := a.algorithms(security); err != nil {
+		return 0, err
+	}
+	tlsConfig, err := a.tlsFlags(security != nil)
+	if err != nil {
 		return 0, err
 	}
 	if err := a.finish("client " + op); err != nil {
@@ -366,15 +402,156 @@ func runClient(op string, a *args) (int, error) {
 		connected, started, stopdt, secured bool
 		exitCode                            = exitOperationFailed
 	)
-	operation := func() error {
+	// open makes a connection to the station, with --tls up to the end of
+	// the handshake, and runs the protocol on it in the stopped state.
+	open := func() (*cs104.Link, error) {
 		nc, err := (&net.Dialer{Timeout: connectTimeout}).DialContext(ctx, "tcp",
 			net.JoinHostPort(host, strconv.Itoa(port)))
 		if err != nil {
 			exitCode = exitConnectFailed
-			return failf("connect-failed", "cannot connect to the station: %v", err)
+			return nil, failf("connect-failed", "cannot connect to the station: %v", err)
 		}
 		connected = true
-		link := cs104.Open(ctx, nc, cfg)
+		if tlsConfig != nil {
+			tc := tls.Client(nc, tlsConfig)
+			hctx, hcancel := context.WithTimeout(ctx, timeout)
+			err := tc.HandshakeContext(hctx)
+			hcancel()
+			if err != nil {
+				_ = nc.Close()
+				return nil, failf("tls-failed", "no TLS session with the station: %v", err)
+			}
+			nc = tc
+		}
+		return cs104.Open(ctx, nc, cfg), nil
+	}
+	// startFailure names what kept STARTDT con from arriving.
+	startFailure := func(closed bool) error {
+		switch {
+		case tlsConfig != nil:
+			return failf("tls-failed", "no STARTDT con over the TLS session")
+		case closed:
+			return failf("connection-lost", "connection closed while waiting for STARTDT con")
+		}
+		return failf("startdt-timeout", "no STARTDT con from the station")
+	}
+	red := &redundancyRun{takeover: switchover == "takeover", s: s, p: p, timeout: timeout}
+	// waitSecure waits for the association of --secure, if there is one.
+	waitSecure := func() error {
+		if sl == nil {
+			return nil
+		}
+		ep := sl.Endpoint()
+		deadline := time.Now().Add(timeout)
+		for !ep.KeysValid() {
+			if s.isClosed() {
+				return failf("connection-lost", "connection closed while the secure session was set up")
+			}
+			if time.Now().After(deadline) {
+				return failf("security-failed", "no secure session with the station: %s", ep.Status().State)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		return nil
+	}
+	// redundancy is the sequence of the contract, by its steps.
+	redundancy := func() error {
+		for i := range red.links {
+			l, err := open()
+			if err != nil {
+				return err
+			}
+			red.links[i] = l
+			red.watch(i, l)
+		}
+		first, second := red.links[primary], red.links[standby]
+		start := func(i int, l *cs104.Link) error {
+			s.update(func() { red.inTime[i] = true })
+			sctx, scancel := context.WithTimeout(ctx, timeout)
+			defer scancel()
+			if err := l.StartDT(sctx); err != nil {
+				if err := red.straySeen(); err != nil {
+					return err
+				}
+				s.waitFor(func() bool { return false }, 20*time.Millisecond)
+				return startFailure(s.isClosed())
+			}
+			return nil
+		}
+		// Step 1.
+		if err := start(primary, first); err != nil {
+			return err
+		}
+		started = true
+		if err := waitSecure(); err != nil {
+			return err
+		}
+		secured = sl != nil
+		// Step 2.
+		if err := red.interrogate(ctx, first, 1); err != nil {
+			return err
+		}
+		// Step 3.
+		if !red.takeover {
+			if err := red.stop(ctx, first); err != nil {
+				return err
+			}
+			s.update(func() { red.inTime[primary] = false })
+		}
+		// Step 4. From here on it is the standby that must stay.
+		s.update(func() { red.current, s.closed = standby, red.closed[standby] })
+		if err := start(standby, second); err != nil {
+			return err
+		}
+		s.update(func() { red.inTime[primary] = false })
+		if err := red.straySeen(); err != nil {
+			return err
+		}
+		if !red.takeover {
+			s.mu.Lock()
+			lost := red.closed[primary]
+			s.mu.Unlock()
+			if lost {
+				return failf("connection-lost", "the primary closed before the standby was started")
+			}
+			// Step 5.
+			if !s.waitFor(func() bool { return red.queued }, timeout) {
+				if s.isClosed() {
+					return failf("connection-lost", "connection closed while waiting for the queued event")
+				}
+				return failf("timeout", "no queued event on the standby")
+			}
+		}
+		if err := waitSecure(); err != nil {
+			return err
+		}
+		// Step 6.
+		if err := red.interrogate(ctx, second, 2); err != nil {
+			return err
+		}
+		// Step 7, with what --collect-ms asks for before the close.
+		if err := red.stop(ctx, second); err != nil {
+			return err
+		}
+		stopdt = true
+		s.update(func() { red.inTime[standby] = false })
+		if collect > 0 {
+			s.waitFor(func() bool { return false }, collect)
+		}
+		if err := red.straySeen(); err != nil {
+			return err
+		}
+		exitCode = exitOK
+		return nil
+	}
+	operation := func() error {
+		if op == "redundancy" {
+			return redundancy()
+		}
+		link, err := open()
+		if err != nil {
+			return err
+		}
 		p.link = link
 		go func() {
 			for raw := range link.ASDUs() {
@@ -395,27 +572,15 @@ func runClient(op string, a *args) (int, error) {
 		err = link.StartDT(sctx)
 		scancel()
 		if err != nil {
-			if s.waitFor(func() bool { return false }, 20*time.Millisecond); s.isClosed() {
-				return failf("connection-lost", "connection closed while waiting for STARTDT con")
-			}
-			return failf("startdt-timeout", "no STARTDT con from the station")
+			s.waitFor(func() bool { return false }, 20*time.Millisecond)
+			return startFailure(s.isClosed())
 		}
 		started = true
 
-		if sl != nil {
-			ep := sl.Endpoint()
-			deadline := time.Now().Add(timeout)
-			for !ep.KeysValid() {
-				if s.isClosed() {
-					return failf("connection-lost", "connection closed while the secure session was set up")
-				}
-				if time.Now().After(deadline) {
-					return failf("security-failed", "no secure session with the station: %s", ep.Status().State)
-				}
-				time.Sleep(5 * time.Millisecond)
-			}
-			secured = true
+		if err := waitSecure(); err != nil {
+			return err
 		}
+		secured = sl != nil
 
 		activation := iec.CauseActivation
 		expect := func(t iec.TypeID) { s.update(func() { s.expectType = t }) }
@@ -528,6 +693,27 @@ func runClient(op string, a *args) (int, error) {
 				}
 				return failf("failed", "%v", err)
 			}
+		case "file-put":
+			err2 = put.run(ctx, p, timeout)
+			if err2 != nil && !errors.As(err2, new(*failure)) && errors.Is(err2, iec.ErrNoAnswer) {
+				err2 = failf("timeout", "%v", err2)
+			}
+		case "file-dir":
+			_, err := iec.CallDirectory(ctx, p, timeout)
+			if err != nil {
+				s.mu.Lock()
+				refused, cot := s.fileRefused, s.negativeCot
+				s.mu.Unlock()
+				switch {
+				case refused:
+					return failf("negative-confirmation", "the station refused the call of the directory (cause %d)", cot)
+				case s.isClosed():
+					return failf("connection-lost", "connection closed during the call of the directory")
+				case errors.Is(err, iec.ErrNoAnswer):
+					return failf("timeout", "%v", err)
+				}
+				return failf("failed", "%v", err)
+			}
 		default: // monitor
 			s.waitFor(func() bool { return maxASDU > 0 && len(s.asdus) >= maxASDU }, time.Duration(duration)*time.Millisecond)
 			if s.isClosed() {
@@ -553,6 +739,7 @@ func runClient(op string, a *args) (int, error) {
 	if p.link != nil {
 		p.link.Close()
 	}
+	red.close()
 
 	r := object{
 		"schemaVersion": schemaVersion,
@@ -571,11 +758,17 @@ func runClient(op string, a *args) (int, error) {
 	s.mu.Lock()
 	r["connected"] = connected
 	r["startdtConfirmed"] = started
-	if op == "connect" {
+	if op == "connect" || op == "redundancy" {
 		r["stopdtConfirmed"] = stopdt
+	}
+	if op == "redundancy" {
+		r["redundancy"] = red.result(switchover)
 	}
 	if security != nil {
 		r["secured"] = secured
+	}
+	if tlsConfig != nil {
+		r["tls"] = started
 	}
 	r["confirmations"] = append([]object{}, s.confirmations...)
 	r["terminated"] = s.terminated
@@ -583,6 +776,12 @@ func runClient(op string, a *args) (int, error) {
 		sum := sha256.Sum256(s.fileData)
 		r["file"] = object{"ioa": ioa, "name": fileName, "length": s.fileLength, "received": len(s.fileData),
 			"sections": p.sections, "sha256": hex.EncodeToString(sum[:])}
+	}
+	if op == "file-put" {
+		r["file"] = put.result()
+	}
+	if op == "file-dir" {
+		r["directory"] = append([]object{}, s.directory...)
 	}
 	r["asdus"] = append([]object{}, s.asdus...)
 	s.mu.Unlock()

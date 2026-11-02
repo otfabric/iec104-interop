@@ -183,6 +183,12 @@ static bool objectToJson(cJSON* o, InformationObject io, IEC60870_5_TypeID type)
         free(hex);
         return true;
     }
+    case F_DR_TA_1:
+        cJSON_AddNumberToObject(o, "nof", FileDirectory_getNOF((FileDirectory)io));
+        cJSON_AddNumberToObject(o, "lof", FileDirectory_getLengthOfFile((FileDirectory)io));
+        cJSON_AddNumberToObject(o, "sof", FileDirectory_getSOF((FileDirectory)io));
+        addTime(o, FileDirectory_getCreationTime((FileDirectory)io));
+        return true;
     case M_EI_NA_1:
         cJSON_AddNumberToObject(o, "coi", EndOfInitialization_getCOI((EndOfInitialization)io));
         return true;
