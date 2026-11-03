@@ -2,8 +2,9 @@ name: Own stack (go-iec104)
 run-name: "Build iec104-interop-otfabric from the latest go-iec104, by @${{ github.actor }} on ${{ github.ref_name }}"
 
 # Manual only. Builds ghcr.io/otfabric/iec104-interop-otfabric from the latest
-# go-iec104 release, tests it against the latest released references and, when
-# run from main, publishes it as :<go-iec104 version> and :latest.
+# go-iec104 release, tests it with the self-tests and references of the latest
+# harness release and, when run from main, publishes it as :<go-iec104 version>
+# and :latest.
 #
 # Nothing is committed, and nothing else waits for this: no pin to bump, no
 # release, no schedule. So no release loop can form (own/go-iec104/README.md).
@@ -114,6 +115,15 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
           [ "${reported}" = "${UPSTREAM}" ] || { echo "::error::the image reports go-iec104 ${reported}, want ${UPSTREAM}"; exit 1; }
 
+      # The self-tests are those of the harness release whose reference images
+      # they run against: main's scripts may already check what only the next
+      # release's references do.
+      - name: Check out the self-tests of ${{ needs.version.outputs.harness }}
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.harness }}
+          path: harness
+
       - name: Pull the reference images of ${{ needs.version.outputs.harness }}
         run: |
           for a in lib60870 openmuc wendy512 cbsigma; do
@@ -123,6 +133,7 @@ jobs:
           done
 
       - name: Smoke, cross-stack self-test against the references, document schemas
+        working-directory: harness
         run: |
           set -o pipefail
           mkdir -p reports
@@ -136,7 +147,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: own-go-iec104-documents-${{ matrix.arch }}
-          path: reports/
+          path: |
+            harness/reports/
+            reports/
           if-no-files-found: ignore
 
       - name: Push the tested image as <version>-<arch>
