@@ -353,7 +353,10 @@ and every information element are part5's. What the part5 adapter met:
   with `server --k 2` and lib60870's client acknowledging late (`--w 8 --t2 5`,
   `IEC104_INTEROP_DEBUG=1`): I frames with send sequence numbers 0, 1 and 2
   went out before the first S frame. No peer in the self-tests enforces its
-  side of k, so no case fails; `k = w = 1` passes in every pairing.
+  side of k, so no case fails; `k = w = 1` passes in every pairing. Reported
+  as [pascaldekloe/part5#6](https://github.com/pascaldekloe/part5/issues/6), fix
+  proposed in [pascaldekloe/part5#7](https://github.com/pascaldekloe/part5/pull/7),
+  tracked in [#18](https://github.com/otfabric/iec104-interop/issues/18).
 - **No t1 on STARTDT.** `run()` checks `bringUpSend` against t1 but never sets
   it when it sends STARTDT act (`session/tcp.go`, case `t.target`), so a station
   that never confirms is waited for forever. The adapter bounds the wait with
