@@ -8,7 +8,7 @@ Delivery in phases, each with an acceptance gate. Status as of 2026-10-26.
 | 2 | lib60870 adapter, client and server | done |
 | 3 | OpenMUC adapter; cross-stack self-test | done |
 | 4 | First published images; consumption from go-iec104 | done: v0.1.0 |
-| 5 | wendy512, cB-Sigma, Eclipse OneOFour, Fraunhofer adapters | wendy512 and cB-Sigma done; the other two not started |
+| 5 | wendy512, cB-Sigma, part5, Eclipse OneOFour, Fraunhofer adapters | wendy512, cB-Sigma and part5 done; the other two not started |
 | 6 | Expanded coverage and hardening | partly: see below |
 | 7 | Release qualification | workflow written, not exercised |
 
@@ -42,7 +42,7 @@ Delivery in phases, each with an acceptance gate. Status as of 2026-10-26.
 
 **Gate:** go-iec104 runs its bidirectional tests against the published images without a checkout of this repository. Met.
 
-## Phase 5 - Additional adapters (wendy512 and cB-Sigma done)
+## Phase 5 - Additional adapters (wendy512, cB-Sigma and part5 done)
 
 ### wendy512/iec104 (done)
 
@@ -61,6 +61,15 @@ Evaluation: both roles exist; the latest tag is v0.3.0 (Apache-2.0, with Apache-
 - Contract 1.2: the security flags, the feature `secureAuthentication` and secure self-tests.
 
 **Gate:** smoke test and cross-stack self-test for the roles it declares, and the secure cases. Met (36 smoke checks; on j60870 1.7.2, 1223 cross-stack checks over sixteen pairings, all passed; on 1.8.0, 1195 checks, 1172 passed and 23 its known read bug, the difference being the agreement checks a known bug suspends; 88 skipped for undeclared capabilities in both). Findings are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+
+### pascaldekloe/part5 (done)
+
+Evaluation: CC0-1.0 (public domain), pure Go with no dependencies, latest tag v0.3.0 (2024-08-11, the tip of its default branch); written from the standards by its author, sharing no code with the other stacks, so a fifth independent implementation. It is a toolkit, not a stack: an APCI session engine that serves either side of a connection (`session.TCP` on any `net.Conn`), the ASDU header codec, every information element type, a decoder of the monitor direction and builders for the process commands. It has no station application, no decoder of the control direction, no file transfer, TLS or redundancy. Its author asks for exactly this kind of testing (pascaldekloe/part5#5, "Call For Testing").
+
+- Go adapter, both roles, the eight operations of contract 1.0, time-tagged commands and the data transfer events. The station logic of the fixture and the reading of control direction ASDUs are the adapter's, with part5's element types; the APCI, the header and every element on the wire are part5's.
+- Not available in the upstream and declared so: file transfer, TLS, redundancy, `--t3 0`.
+
+**Gate:** smoke test and cross-stack self-test for the roles it declares. Met (49 smoke checks; 3115 cross-stack checks over twenty-five pairings, 3071 passed, 44 the known read bug of j60870 1.8.0, none failed, 583 skipped for undeclared capabilities; 918 of the passes involve part5). Findings are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md#pascaldekloepart5-and-the-other-stacks).
 
 ### Remaining
 

@@ -3,6 +3,7 @@ adapters/lib60870/build/
 adapters/openmuc/target/
 adapters/wendy512/iec104-interop
 adapters/cbsigma/iec104-interop
+adapters/part5/iec104-interop
 reports/
 
 # Editors and OS
@@ -19,3 +20,4 @@ coverage.out
 # Output of a bare `go build`, anchored so it can never hide a source folder
 /adapters/cbsigma/cbsigma
 /adapters/wendy512/wendy512
+/adapters/part5/part5

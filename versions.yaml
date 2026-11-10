@@ -85,6 +85,28 @@ implementations:
       decred secp256k1 ISC. The versions of every module are in
       adapters/cbsigma/go.mod.
 
+  part5:
+    priority: P1
+    status: published
+    upstream: "pascaldekloe/part5"
+    repository: "https://github.com/pascaldekloe/part5"
+    module: "github.com/pascaldekloe/part5"
+    version: "v0.3.0"            # latest release
+    revision: "1aed6b914f5ce5fd070c0f37d57fc72fe7280a02"
+    license: "CC0-1.0"
+    language: "Go"
+    independent_engine: true
+    roles: [server, client]
+    note: >-
+      A toolkit rather than a stack: its own APCI session engine for either
+      side of a connection (session.TCP), the ASDU header codec, every
+      information element type, a monitor-direction decoder
+      (MonitorDataUnit) and builders for the process commands and the
+      interrogation. There is no station application, decoder for the control
+      direction, file transfer, TLS or redundancy: the adapter answers the
+      fixture itself and reads control direction ASDUs with part5's element
+      types, and declares no file, TLS or redundancy feature.
+
   oneofour:
     priority: P1
     status: planned
@@ -136,6 +158,7 @@ images:
   openmuc: "ghcr.io/otfabric/iec104-interop-openmuc"
   wendy512: "ghcr.io/otfabric/iec104-interop-wendy512"
   cbsigma: "ghcr.io/otfabric/iec104-interop-cbsigma"
+  part5: "ghcr.io/otfabric/iec104-interop-part5"
 
 platforms:
   - "linux/amd64"

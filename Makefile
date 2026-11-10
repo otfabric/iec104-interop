@@ -31,7 +31,7 @@ BUILDER ?= iec104-interop
 
 # Adapters with a published image, in priority order. The self-tests run over
 # all of them; override to work on one: make smoke ADAPTERS=lib60870
-ADAPTERS ?= lib60870 openmuc wendy512 cbsigma
+ADAPTERS ?= lib60870 openmuc wendy512 cbsigma part5
 
 image = $(REGISTRY)/iec104-interop-$(1)
 
@@ -40,8 +40,8 @@ export REGISTRY VERSION
 # image-% and smoke-% are pattern rules, which make ignores for .PHONY
 # targets: they depend on FORCE instead.
 .PHONY: help all ci validate documents lint images smoke interop buildx publish candidate-openmuc candidate-lib60870 \
-        candidate-wendy512 candidate-cbsigma buildx-setup publish-arch publish-manifest digests run-lib60870 run-openmuc \
-        run-wendy512 run-cbsigma capabilities clean FORCE
+        candidate-wendy512 candidate-cbsigma candidate-part5 buildx-setup publish-arch publish-manifest digests run-lib60870 run-openmuc \
+        run-wendy512 run-cbsigma run-part5 capabilities clean FORCE
 FORCE:
 
 help: ## Show this help
@@ -179,6 +179,21 @@ candidate-cbsigma: image-lib60870 image-openmuc image-wendy512 ## Build cbsigma 
 	@VERSION=candidate scripts/smoke.sh cbsigma
 	@VERSION=candidate scripts/interop.sh lib60870 openmuc wendy512 cbsigma
 
+# A part5 candidate is a version of pascaldekloe/part5: a tag, a branch or a
+# commit, as "go get" takes them.
+PART5_CANDIDATE ?= latest
+
+candidate-part5: image-lib60870 image-openmuc image-wendy512 image-cbsigma ## Build part5 on PART5_CANDIDATE and self-test it (release pin untouched)
+	@echo "Building part5 candidate on part5 $(PART5_CANDIDATE)..."
+	@$(RETRY) docker build \
+		--build-arg BASE_REGISTRY=$(BASE_REGISTRY) --build-arg ADAPTER_VERSION=candidate \
+		--build-arg PART5_VERSION=$(PART5_CANDIDATE) \
+		--tag $(call image,part5):candidate \
+		--file adapters/part5/Dockerfile .
+	@for a in lib60870 openmuc wendy512 cbsigma; do docker tag $(call image,$$a):$(VERSION) $(call image,$$a):candidate; done
+	@VERSION=candidate scripts/smoke.sh part5
+	@VERSION=candidate scripts/interop.sh lib60870 openmuc wendy512 cbsigma part5
+
 capabilities: ## Print the capability document of every adapter
 	@for a in $(ADAPTERS); do docker run --rm $(call image,$$a):$(VERSION) print-capabilities; done
 
@@ -188,6 +203,7 @@ LIB60870_PORT ?= 2404
 OPENMUC_PORT  ?= 2405
 WENDY512_PORT ?= 2406
 CBSIGMA_PORT  ?= 2407
+PART5_PORT    ?= 2408
 
 run-lib60870: ## Run the lib60870 server on 127.0.0.1:$(LIB60870_PORT)
 	docker run --rm -p 127.0.0.1:$(LIB60870_PORT):2404 $(call image,lib60870):$(VERSION) server
@@ -200,6 +216,9 @@ run-wendy512: ## Run the wendy512 server on 127.0.0.1:$(WENDY512_PORT)
 
 run-cbsigma: ## Run the cB-Sigma server on 127.0.0.1:$(CBSIGMA_PORT) (without security)
 	docker run --rm -p 127.0.0.1:$(CBSIGMA_PORT):2404 $(call image,cbsigma):$(VERSION) server
+
+run-part5: ## Run the part5 server on 127.0.0.1:$(PART5_PORT)
+	docker run --rm -p 127.0.0.1:$(PART5_PORT):2404 $(call image,part5):$(VERSION) server
 
 # ── Multi-arch build and publish ──────────────────────────────────────────────
 

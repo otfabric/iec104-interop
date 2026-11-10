@@ -59,6 +59,7 @@ jobs:
           - { component: j60870, adapter: openmuc, kind: library }
           - { component: wendy512, adapter: wendy512, kind: library }
           - { component: cbsigma, adapter: cbsigma, kind: library }
+          - { component: part5, adapter: part5, kind: library }
     steps:
       - uses: actions/checkout@v7
 
@@ -123,7 +124,7 @@ jobs:
               information on what the next release brings; only releases are pinned.
             - **j60870:** `ARG J60870_VERSION` in `adapters/openmuc/Dockerfile` and
               `j60870.version` in `adapters/openmuc/pom.xml`.
-            - **wendy512, cbsigma:** `ARG IEC104_VERSION`, `GOIECP5_VERSION` / `IEC60870_VERSION`
+            - **wendy512, cbsigma, part5:** `ARG IEC104_VERSION`, `GOIECP5_VERSION` / `IEC60870_VERSION` / `PART5_VERSION`
               in the adapter Dockerfile, and `go get <module>@<version> && go mod tidy` in the
               adapter directory (go.mod and go.sum).
             - Mirror the pin in `versions.yaml` (`scripts/check-versions.sh` checks it). Reproduce

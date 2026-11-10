@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compares the upstream pin of one stack with the latest upstream.
 
-    scripts/latest-upstream.py lib60870|lib60870-head|j60870|wendy512|cbsigma
+    scripts/latest-upstream.py lib60870|lib60870-head|j60870|wendy512|cbsigma|part5
 
 Prints key=value lines (the format of $GITHUB_OUTPUT), for the Upstream
 workflow:
@@ -121,12 +121,20 @@ def cbsigma():
     return pin, latest, moved(tags, pin, latest), "git tags of cB-Sigma/iec60870", f"IEC60870_CANDIDATE={latest}"
 
 
+def part5():
+    pin = arg("part5", "PART5_VERSION")
+    tags = git_tags("https://github.com/pascaldekloe/part5.git")
+    latest = newest(tags)
+    return pin, latest, moved(tags, pin, latest), "git tags of pascaldekloe/part5", f"PART5_CANDIDATE={latest}"
+
+
 RESOLVERS = {
     "lib60870": lib60870,
     "lib60870-head": lib60870_head,
     "j60870": j60870,
     "wendy512": wendy512,
     "cbsigma": cbsigma,
+    "part5": part5,
 }
 
 

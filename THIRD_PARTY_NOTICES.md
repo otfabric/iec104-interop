@@ -13,6 +13,7 @@ next to the licence texts.
 | `adapters/openmuc/` (links j60870) | GPL-3.0-or-later |
 | `adapters/wendy512/` (links wendy512/iec104 and go-iecp5) | GPL-3.0-or-later |
 | `adapters/cbsigma/` (links cB-Sigma/iec60870 and the modules it needs) | GPL-3.0-or-later |
+| `adapters/part5/` (links pascaldekloe/part5) | GPL-3.0-or-later |
 | `own/go-iec104/` (links go-iec104) | MIT |
 | The published reference images | GPL-3.0 (they contain the libraries below) |
 | The image `iec104-interop-otfabric` | MIT and BSD-3-Clause, as listed below |
@@ -20,7 +21,8 @@ next to the licence texts.
 The lib60870 and openmuc adapter programs are derivative works of GPL-3.0
 libraries. The wendy512 adapter links an Apache-2.0 and an LGPL-3.0 library,
 both of which may be combined into a GPL-3.0 work, and the cbsigma adapter
-Apache-2.0, BSD-3-Clause and ISC libraries, which may be as well; both are
+Apache-2.0, BSD-3-Clause and ISC libraries, which may be as well; the part5
+adapter links a library dedicated to the public domain (CC0-1.0). All three are
 under the same licence as the other two so that one licence covers
 `adapters/`. All carry
 `SPDX-License-Identifier: GPL-3.0-or-later`. Nothing in this repository is
@@ -102,6 +104,19 @@ notice files of every linked module to `/licenses/<module path>/` (the
 Apache-2.0 modules have a `NOTICE` as well) and fails when a module has
 none; `/licenses/GPL-3.0.txt` is the adapter's.
 
+## Image `iec104-interop-part5`
+
+| Component | Version | Licence | Source |
+|-----------|---------|---------|--------|
+| pascaldekloe/part5 | v0.3.0, commit `1aed6b914f5ce5fd070c0f37d57fc72fe7280a02` | CC0-1.0 (public domain dedication) | https://github.com/pascaldekloe/part5 |
+| Go standard library and runtime | 1.27.2 | BSD-3-Clause | https://go.dev |
+| Adapter | this repository, `adapters/part5/` | GPL-3.0-or-later | https://github.com/otfabric/iec104-interop |
+| Base system | Debian trixie-slim | various; see `/usr/share/doc/*/copyright` in the image | https://www.debian.org |
+
+part5 has no dependencies. The build copies its `LICENSE` (the CC0 waiver) to
+`/licenses/github.com/pascaldekloe/part5/` and fails when it has none;
+`/licenses/GPL-3.0.txt` is the adapter's.
+
 ## Corresponding source
 
 For every published image the complete corresponding source is:
@@ -111,7 +126,8 @@ For every published image the complete corresponding source is:
    (`adapterVersion`), which contains the adapter source and the build
    instructions (the Dockerfile); and
 2. the upstream sources at exactly the versions pinned by that Dockerfile,
-   `adapters/openmuc/pom.xml`, `adapters/wendy512/go.mod` and `adapters/cbsigma/go.mod`, recorded in [versions.yaml](versions.yaml) and
+   `adapters/openmuc/pom.xml`, `adapters/wendy512/go.mod`, `adapters/cbsigma/go.mod` and
+   `adapters/part5/go.mod`, recorded in [versions.yaml](versions.yaml) and
    in the `manifest.json` of the release.
 
 `docker build -f adapters/<adapter>/Dockerfile .` at the release tag

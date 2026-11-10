@@ -48,41 +48,43 @@ One JSON object on one line ([schema](../schemas/capabilities.schema.json)):
 
 ## Features
 
-| Feature | Meaning | lib60870 | openmuc | wendy512 | cbsigma |
-|---------|---------|:--------:|:-------:|:--------:|:-------:|
-| `generalInterrogation` | Station interrogation (QOI 20), both roles | yes | yes | yes | yes |
-| `groupInterrogation` | Interrogation groups 1..16 (QOI 21..36): a station answers the groups of its fixture and refuses the others | yes | yes | yes | yes |
-| `counterInterrogation` | General counter request, read | yes | yes | yes | yes |
-| `read` | Read command, including the refusal of an unknown address | yes | yes | yes | yes |
-| `clockSync` | Clock synchronization command | yes | yes | yes | yes |
-| `testCommand` | Test command with time tag (C_TS_TA_1) | yes | yes | yes | yes |
-| `directCommands` | Execute without select | yes | yes | yes | yes |
-| `selectBeforeOperate` | Select, execute, and `selectRequired` objects | yes | yes | yes | yes |
-| `commandDeactivation` | Cancelling a selection (cause 8) | yes | yes | yes | yes |
-| `timeTaggedCommands` | The CP56Time2a command types, as station and as controlling station | yes | yes | no ² | yes |
-| `spontaneousOnCommand` | The time-tagged report after an executed command | yes | yes | yes | yes |
-| `apciParameters` | The `--k --w --t0..--t3` flags | yes | yes ¹ | yes ¹ | yes ¹ |
-| `multipleConnections` | Independent simultaneous sessions | yes | yes | yes | yes |
-| `pointQualityOnBitstring` | A quality descriptor other than good on `M_BO_NA_1` | yes | yes | yes | yes |
-| `tls` | IEC 62351-3 transport security in both roles: `tlsServer` and `tlsClient` | yes | yes | no ³ | yes |
-| `tlsServer` | The [TLS flags](CONTAINER_CONTRACT.md#transport-security-flags) on `server` | yes | yes | no ³ | yes |
-| `tlsClient` | The TLS flags on `client` | yes | yes | yes | yes |
-| `dataTransferEvents` | The server events `data-transfer-started` and `data-transfer-stopped` | yes | yes | no ⁴ | yes ⁵ |
-| `fileTransfer` | The file transfer types 120..125 in ASDU documents | yes | yes | no ⁶ | yes |
-| `fileServer` | The station serves the `files` of a fixture | yes | yes ⁷ | yes ⁷ | yes |
-| `fileClient` | The `file-get` operation | yes | yes ⁷ | no ⁶ | yes |
-| `fileUploadServer` | The station takes the `uploads` of a fixture | yes | yes ⁷ | no ⁶ | yes |
-| `fileUploadClient` | The `file-put` operation | yes | yes ⁷ | yes ⁷ | yes |
-| `fileDirectoryServer` | The station answers a directory call with F_DR_TA_1 | yes | yes ⁷ | yes ⁷ | yes |
-| `fileDirectoryClient` | The `file-dir` operation | yes | yes ⁷ | yes ⁷ | yes |
-| `redundancyServer` | `server --redundancy-group`: one group of connections, one started | yes | yes | no ⁸ | yes |
-| `redundancyClient` | The `redundancy` operation | yes | yes | yes | yes |
-| `secureAuthentication` | The [security flags](CONTAINER_CONTRACT.md#security-flags): the A-Profile of IEC 62351-5, as station and as controlling station | no | no | no | yes ⁹ |
+| Feature | Meaning | lib60870 | openmuc | wendy512 | cbsigma | part5 |
+|---------|---------|:--------:|:-------:|:--------:|:-------:|:-----:|
+| `generalInterrogation` | Station interrogation (QOI 20), both roles | yes | yes | yes | yes | yes |
+| `groupInterrogation` | Interrogation groups 1..16 (QOI 21..36): a station answers the groups of its fixture and refuses the others | yes | yes | yes | yes | yes |
+| `counterInterrogation` | General counter request, read | yes | yes | yes | yes | yes |
+| `read` | Read command, including the refusal of an unknown address | yes | yes | yes | yes | yes |
+| `clockSync` | Clock synchronization command | yes | yes | yes | yes | yes |
+| `testCommand` | Test command with time tag (C_TS_TA_1) | yes | yes | yes | yes | yes |
+| `directCommands` | Execute without select | yes | yes | yes | yes | yes |
+| `selectBeforeOperate` | Select, execute, and `selectRequired` objects | yes | yes | yes | yes | yes |
+| `commandDeactivation` | Cancelling a selection (cause 8) | yes | yes | yes | yes | yes |
+| `timeTaggedCommands` | The CP56Time2a command types, as station and as controlling station | yes | yes | no ² | yes | yes ¹⁰ |
+| `spontaneousOnCommand` | The time-tagged report after an executed command | yes | yes | yes | yes | yes |
+| `apciParameters` | The `--k --w --t0..--t3` flags | yes | yes ¹ | yes ¹ | yes ¹ | yes ¹ |
+| `multipleConnections` | Independent simultaneous sessions | yes | yes | yes | yes | yes |
+| `pointQualityOnBitstring` | A quality descriptor other than good on `M_BO_NA_1` | yes | yes | yes | yes | yes |
+| `tls` | IEC 62351-3 transport security in both roles: `tlsServer` and `tlsClient` | yes | yes | no ³ | yes | no ¹¹ |
+| `tlsServer` | The [TLS flags](CONTAINER_CONTRACT.md#transport-security-flags) on `server` | yes | yes | no ³ | yes | no ¹¹ |
+| `tlsClient` | The TLS flags on `client` | yes | yes | yes | yes | no ¹¹ |
+| `dataTransferEvents` | The server events `data-transfer-started` and `data-transfer-stopped` | yes | yes | no ⁴ | yes ⁵ | yes ¹² |
+| `fileTransfer` | The file transfer types 120..125 in ASDU documents | yes | yes | no ⁶ | yes | no ¹³ |
+| `fileServer` | The station serves the `files` of a fixture | yes | yes ⁷ | yes ⁷ | yes | no ¹³ |
+| `fileClient` | The `file-get` operation | yes | yes ⁷ | no ⁶ | yes | no ¹³ |
+| `fileUploadServer` | The station takes the `uploads` of a fixture | yes | yes ⁷ | no ⁶ | yes | no ¹³ |
+| `fileUploadClient` | The `file-put` operation | yes | yes ⁷ | yes ⁷ | yes | no ¹³ |
+| `fileDirectoryServer` | The station answers a directory call with F_DR_TA_1 | yes | yes ⁷ | yes ⁷ | yes | no ¹³ |
+| `fileDirectoryClient` | The `file-dir` operation | yes | yes ⁷ | yes ⁷ | yes | no ¹³ |
+| `redundancyServer` | `server --redundancy-group`: one group of connections, one started | yes | yes | no ⁸ | yes | no ¹⁴ |
+| `redundancyClient` | The `redundancy` operation | yes | yes | yes | yes | no ¹⁴ |
+| `secureAuthentication` | The [security flags](CONTAINER_CONTRACT.md#security-flags): the A-Profile of IEC 62351-5, as station and as controlling station | no | no | no | yes ⁹ | no |
 
 ¹ j60870 cannot switch the idle test off and requires `t3 >= t1`; go-iecp5
 requires every timer between 1 and 255 seconds; cB-Sigma/iec60870 takes a
-timer of 0 for its default, so it cannot switch the idle test off either.
-`--t3 0` is a usage error for these three adapters.
+timer of 0 for its default, so it cannot switch the idle test off either, and
+neither can pascaldekloe/part5, which also takes 0 for its default
+(`session/config.go`) and panics on t0, t1 or t2 beyond 255 seconds.
+`--t3 0` is a usage error for these four adapters.
 
 ² go-iecp5 v1.2.6 encodes C_SC_TA_1 .. C_SE_TC_1 but has no length for them, so it
 drops them on reception: a station never sees the command and a controlling
@@ -127,6 +129,31 @@ self-tests run cB-Sigma against itself; their value is for consumers that
 pair it with another implementation. The flags give a station one
 certificate and one set of trusted authorities and pins, so the association
 is authenticated with certificates only.
+
+¹⁰ pascaldekloe/part5 v0.3.0 is a toolkit: it has a session engine for either
+side of a connection (`session.TCP`), the information element types and a
+decoder of the monitor direction (`MonitorDataUnit`), but no station
+application and no decoder of the control direction. The adapter's station
+answers the fixture itself and reads every command, with or without time tag,
+with part5's element types (`info.CmdQual`, `info.SetPtQual`, `info.Norm`,
+`info.CP56Time2a`); the controlling station builds its commands with part5's
+`Command` builders and adds the time tag. The APCI, the ASDU header and the
+elements on the wire are part5's in both roles.
+
+¹¹ part5 v0.3.0 has no TLS. `session.TCP` takes any `net.Conn`, so the adapter
+could hand it a `crypto/tls` connection, but that would test Go's TLS, not
+part5.
+
+¹² part5 reports every level of a session on `Station.Level`: Down when it
+opens, Up on STARTDT, Down on STOPDT. It reports Down as well when a started
+session closes; the adapter emits `data-transfer-stopped` only when the
+session is still open after it.
+
+¹³ part5 v0.3.0 has the type identifications of file transfer
+(`info.F_FR_NA_1` ...) but no information elements or procedure for them.
+
+¹⁴ part5 v0.3.0 has no notion of a redundancy group, and its client side is
+one session per connection with no hook to run two.
 
 OT Fabric's own image (`own/go-iec104`, not a reference) declares every feature
 in this table.

@@ -19,6 +19,7 @@ below, and the cases it explains count as known bugs instead of failures.
 | `wendy512` | [wendy512/iec104](https://github.com/wendy512/iec104) | v1.0.4 | v1.0.4 | Go module `github.com/wendy512/iec104@v1.0.4` (commit `8fb65c83865c94cf37a89d12c9c42dd8c1807cc4`), checksum in `go.sum` | independent, Go |
 | | its engine [wendy512/go-iecp5](https://github.com/wendy512/go-iecp5) | v1.2.6 | v1.2.6 | Go module `github.com/wendy512/go-iecp5@v1.2.6` (commit `2269ee79a5e137847bbdc811be71a1064d303560`), checksum in `go.sum` | |
 | `cbsigma` | [cB-Sigma/iec60870](https://github.com/cB-Sigma/iec60870) | v0.3.0 | v0.3.0 | Go module `github.com/cB-Sigma/iec60870@v0.3.0` (commit `d0cad7ab6b8905d21dca12f4f7364e788c80ae17`), checksum in `go.sum` | independent, Go |
+| `part5` | [pascaldekloe/part5](https://github.com/pascaldekloe/part5) | v0.3.0 | v0.3.0 | Go module `github.com/pascaldekloe/part5@v0.3.0` (commit `1aed6b914f5ce5fd070c0f37d57fc72fe7280a02`), checksum in `go.sum` | independent, Go |
 
 Everything else is on its latest release as of 2026-10-09: Debian 13
 (trixie), Eclipse Temurin 25, Maven 3.9, Gson 2.14.0, Go 1.27.2. Mbed TLS,
@@ -30,7 +31,7 @@ the same commit, so the adapter builds on the latest tag without a change in
 code.
 
 The pins live in the Dockerfiles, `adapters/openmuc/pom.xml`,
-`adapters/wendy512/go.mod` and `adapters/cbsigma/go.mod` and are mirrored in
+`adapters/wendy512/go.mod`, `adapters/cbsigma/go.mod` and `adapters/part5/go.mod` and are mirrored in
 [versions.yaml](../versions.yaml); `scripts/check-versions.sh` keeps them in
 step. The **Upstream** workflow
 (`.github/workflows/upstream.yml`, daily and on demand) resolves the latest
@@ -76,18 +77,19 @@ did not reproduce", which is the signal to remove the entry.
 ## Cross-stack matrix
 
 `make interop` runs every case of [tests/cases.tsv](../tests/cases.tsv) and
-[tests/feature-cases.tsv](../tests/feature-cases.tsv) in all sixteen pairings and
+[tests/feature-cases.tsv](../tests/feature-cases.tsv) in all twenty-five pairings and
 requires, besides the expected outcome, that the result documents of all pairings
 are identical apart from time tags and the fields
 [listed below](#contract-13-and-the-stacks). A case that needs a feature a pairing
 does not declare is skipped for that pairing and counted as such.
 
-| Client → Server | lib60870 | openmuc | wendy512 | cbsigma |
-|-----------------|:--------:|:-------:|:--------:|:-------:|
-| **lib60870** | pass | pass ³ | pass ¹ | pass |
-| **openmuc** | pass ³ | pass ³ | pass ¹ ³ | pass ³ |
-| **wendy512** | pass ¹ | pass ¹ ³ | pass ¹ | pass ¹ |
-| **cbsigma** | pass | pass ³ | pass ¹ | pass ² |
+| Client → Server | lib60870 | openmuc | wendy512 | cbsigma | part5 |
+|-----------------|:--------:|:-------:|:--------:|:-------:|:-----:|
+| **lib60870** | pass | pass ³ | pass ¹ | pass | pass ⁴ |
+| **openmuc** | pass ³ | pass ³ | pass ¹ ³ | pass ³ | pass ³ ⁴ |
+| **wendy512** | pass ¹ | pass ¹ ³ | pass ¹ | pass ¹ | pass ¹ ⁴ |
+| **cbsigma** | pass | pass ³ | pass ¹ | pass ² | pass ⁴ |
+| **part5** | pass ⁴ | pass ³ ⁴ | pass ¹ ⁴ | pass ⁴ | pass ⁴ |
 
 ¹ without what wendy512 does not declare, as client or as station: time-tagged
 commands, downloading, taking an upload, and TLS and redundancy as a station. See
@@ -96,6 +98,8 @@ the [capabilities](CAPABILITIES.md#features).
 security flags, which only cbsigma has.
 ³ except read: a known bug of j60870 1.8.0 (see
 [the finding](#j60870-180-cannot-receive-a-read-command)).
+⁴ without what part5 does not declare, as client or as station: file transfer,
+TLS and redundancy. See the [capabilities](CAPABILITIES.md#features).
 
 Verified on linux/amd64 and linux/arm64 with the pins above on 2026-11-02, by CI: 39
 cases and 29 feature cases, the value checks and the session checks over 16 pairings,
@@ -103,6 +107,11 @@ and the 10 secure cases for cbsigma against itself; 2188 checks, of which 2153 p
 and 35 were the known read bug of j60870 1.8.0, none failed, and 262 were skipped for
 a capability that is not declared. With the own image as a fifth stack, on linux/arm64
 locally: 3596 checks, of which 3552 passed and 44 were that bug, none failed, 351 skipped.
+With part5 as a fifth reference, on linux/arm64 locally on 2026-11-10 (25 pairings):
+3115 checks, of which 3071 passed and 44 were the known read bug, none failed, and
+583 were skipped for a capability that is not declared. Of the checks with part5 on
+either side, 918 passed (814 of them against another stack), 9 were the read bug
+and none failed.
 
 Covered by every pairing: STARTDT/STOPDT; general interrogation (station, broadcast address,
 unknown station, unsupported group); counter interrogation; read of a
@@ -330,6 +339,65 @@ What the cbsigma adapter met, and how it deals with it:
   the acknowledgement of a download, to the FileWrite permission, so with
   `--roles viewer` a download is likely refused at its end. The secure
   cases do not download files.
+
+### pascaldekloe/part5 and the other stacks
+
+part5 v0.3.0 is a toolkit (see [CAPABILITIES.md](CAPABILITIES.md#features),
+footnote 10): the adapter supplies the station logic and reads the control
+direction with part5's element types, while the APCI engine, the ASDU header
+and every information element are part5's. What the part5 adapter met:
+
+- **One I frame more than k.** The engine takes the next outbound ASDU while
+  `seqNoCount(ackNoOut, seqNoOut) <= SendUnackMax` (`session/tcp.go:257`),
+  so it has k + 1 I frames unacknowledged before it waits. Seen on the wire
+  with `server --k 2` and lib60870's client acknowledging late (`--w 8 --t2 5`,
+  `IEC104_INTEROP_DEBUG=1`): I frames with send sequence numbers 0, 1 and 2
+  went out before the first S frame. No peer in the self-tests enforces its
+  side of k, so no case fails; `k = w = 1` passes in every pairing. Reported
+  as [pascaldekloe/part5#6](https://github.com/pascaldekloe/part5/issues/6), fix
+  proposed in [pascaldekloe/part5#7](https://github.com/pascaldekloe/part5/pull/7),
+  tracked in [#18](https://github.com/otfabric/iec104-interop/issues/18).
+- **No t1 on STARTDT.** `run()` checks `bringUpSend` against t1 but never sets
+  it when it sends STARTDT act (`session/tcp.go`, case `t.target`), so a station
+  that never confirms is waited for forever. The adapter bounds the wait with
+  `--timeout-ms` (the error `startdt-timeout`), as the contract asks anyway.
+- **Every channel of a session is unbuffered.** `In`, `Level` and `Class1/2`
+  are served from the one goroutine of the state machine: an application that
+  sends an answer from the goroutine that reads `In` deadlocks as soon as the
+  peer sends two I frames in a row. The adapter drains every channel into
+  queues.
+- **Down when a session closes.** part5 reports `Down` on STOPDT and again
+  when a started session ends, and sends a STOPDT act on its way out. The
+  adapter emits `data-transfer-stopped` only when the session is still open
+  afterwards.
+- **The bitstring is octets.** `info.BitsQual` has an integer view only in
+  big-endian order (`BigEndian`, `SetBigEndian`); the contract's value is the
+  little-endian one every other stack uses (BSI bit 1 is the low bit of the
+  first octet), so the adapter reads and writes the octets itself. No
+  fixture would show the difference: every bitstring in them (`0xAAAAAAAA`,
+  `0x55555555`, `0xF0F0F0F0`) has four equal octets.
+- **M_EI_NA_1 is not dispatched.** `MonitorDataUnit` refuses every type above
+  44 before its `switch`, so its case for M_EI_NA_1 (type 70) is never reached.
+  Read from the source; no case of the self-tests sends M_EI_NA_1. The adapter
+  decodes it with part5's `info.InitCause`.
+- **Day of week.** `CP56Time2a.Set` writes `Weekday() + 1` (`info/time.go`),
+  which makes Monday 2 where IEC 60870-5-101 7.2.6.18 has Monday 1 and Sunday 7.
+  No stack in the self-tests reads the day of the week, and the contract does
+  not compare it. Read from the source, not shown by a peer.
+- **The control direction is the application's.** part5 builds commands
+  (`Command.SingleCmd` ...) but does not decode them, and it has `ConOf` for
+  the confirmation of one request. The adapter reads commands, interrogations,
+  reads, clock synchronizations and test commands from their element types.
+  Its `TestCmd` is C_TS_NA_1, which IEC 104 does not use; the adapter builds
+  C_TS_TA_1.
+- **Timers of 0 are defaults.** As with cB-Sigma, a timer of 0 in
+  `session.TCPConfig` is "use the default", so `--t3 0` is a usage error; part5
+  panics on t0..t2 beyond 255 seconds, which the adapter refuses as a usage
+  error first. part5 does not dial: the adapter dials with the shorter of
+  `--connect-timeout-ms` and t0.
+- **Log noise.** part5 reports "use of closed network connection" on `Err`
+  whenever a session closes (`session/tcp.go`, `recvLoop`); it reaches stderr
+  only.
 
 ### Contract 1.3 and the stacks
 
