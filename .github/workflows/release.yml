@@ -181,10 +181,12 @@ jobs:
             --arg iec104 "$(arg adapters/wendy512/Dockerfile IEC104_VERSION)" \
             --arg goiecp5 "$(arg adapters/wendy512/Dockerfile GOIECP5_VERSION)" \
             --arg iec60870 "$(arg adapters/cbsigma/Dockerfile IEC60870_VERSION)" \
+            --arg part5 "$(arg adapters/part5/Dockerfile PART5_VERSION)" \
             --arg lib_digest "${{ steps.digests.outputs.lib60870 }}" \
             --arg openmuc_digest "${{ steps.digests.outputs.openmuc }}" \
             --arg wendy512_digest "${{ steps.digests.outputs.wendy512 }}" \
             --arg cbsigma_digest "${{ steps.digests.outputs.cbsigma }}" \
+            --arg part5_digest "${{ steps.digests.outputs.part5 }}" \
             '{
               version: $version,
               commit: $commit,
@@ -196,13 +198,15 @@ jobs:
                 j60870: { version: $j60870 },
                 "wendy512/iec104": { version: $iec104 },
                 "wendy512/go-iecp5": { version: $goiecp5 },
-                "cB-Sigma/iec60870": { version: $iec60870 }
+                "cB-Sigma/iec60870": { version: $iec60870 },
+                "pascaldekloe/part5": { version: $part5 }
               },
               images: {
                 lib60870: ("ghcr.io/otfabric/iec104-interop-lib60870@" + $lib_digest),
                 openmuc: ("ghcr.io/otfabric/iec104-interop-openmuc@" + $openmuc_digest),
                 wendy512: ("ghcr.io/otfabric/iec104-interop-wendy512@" + $wendy512_digest),
-                cbsigma: ("ghcr.io/otfabric/iec104-interop-cbsigma@" + $cbsigma_digest)
+                cbsigma: ("ghcr.io/otfabric/iec104-interop-cbsigma@" + $cbsigma_digest),
+                part5: ("ghcr.io/otfabric/iec104-interop-part5@" + $part5_digest)
               }
             }' > manifest.json
           cat manifest.json
@@ -216,6 +220,7 @@ jobs:
           OPENMUC: ${{ steps.digests.outputs.openmuc }}
           WENDY512: ${{ steps.digests.outputs.wendy512 }}
           CBSIGMA: ${{ steps.digests.outputs.cbsigma }}
+          PART5: ${{ steps.digests.outputs.part5 }}
         run: |
           {
             scripts/release-notes.sh "${VERSION}"
@@ -228,6 +233,7 @@ jobs:
             echo "| \`${REGISTRY}/iec104-interop-openmuc:${VERSION}\` | \`${OPENMUC}\` |"
             echo "| \`${REGISTRY}/iec104-interop-wendy512:${VERSION}\` | \`${WENDY512}\` |"
             echo "| \`${REGISTRY}/iec104-interop-cbsigma:${VERSION}\` | \`${CBSIGMA}\` |"
+            echo "| \`${REGISTRY}/iec104-interop-part5:${VERSION}\` | \`${PART5}\` |"
             echo
             echo "## Pinning in a consumer"
             echo
@@ -236,9 +242,10 @@ jobs:
             echo "IEC104_INTEROP_OPENMUC_IMAGE=${REGISTRY}/iec104-interop-openmuc@${OPENMUC}"
             echo "IEC104_INTEROP_WENDY512_IMAGE=${REGISTRY}/iec104-interop-wendy512@${WENDY512}"
             echo "IEC104_INTEROP_CBSIGMA_IMAGE=${REGISTRY}/iec104-interop-cbsigma@${CBSIGMA}"
+            echo "IEC104_INTEROP_PART5_IMAGE=${REGISTRY}/iec104-interop-part5@${PART5}"
             echo '```'
             echo
-            echo "\`manifest.json\` records the upstream revisions these images were built from. The images contain GPL-3.0, LGPL-3.0, Apache-2.0, BSD-3-Clause and ISC software; see \`THIRD_PARTY_NOTICES.md\`."
+            echo "\`manifest.json\` records the upstream revisions these images were built from. The images contain GPL-3.0, LGPL-3.0, Apache-2.0, BSD-3-Clause, ISC and CC0-1.0 software; see \`THIRD_PARTY_NOTICES.md\`."
           } > "${RUNNER_TEMP}/release-body.md"
           cat "${RUNNER_TEMP}/release-body.md"
 

@@ -51,4 +51,14 @@ if [[ "${cb}" != "$(sed -nE 's|^require github.com/cB-Sigma/iec60870 (v[^ ]+).*$
     echo "FAIL iec60870 version: Dockerfile and go.mod disagree"
     status=1
 fi
+p5=$(arg adapters/part5/Dockerfile PART5_VERSION)
+need "part5 golang"      "$(arg adapters/part5/Dockerfile GOLANG_DIGEST)"
+need "part5 debian"      "$(arg adapters/part5/Dockerfile DEBIAN_DIGEST)"
+# The part5 entry of implementations, so a version another entry has cannot match.
+p5yaml=$(awk '/^  part5:/{on=1; next} on && /^  [a-z0-9]+:/{on=0} on && /^    version:/{print $2; exit}' versions.yaml | tr -d '"')
+if [[ "${p5yaml}" == "${p5}" ]]; then echo "ok   part5 version: ${p5}"; else echo "FAIL part5 version: Dockerfile ${p5}, versions.yaml '${p5yaml}'"; status=1; fi
+if [[ "${p5}" != "$(sed -nE 's|^require github.com/pascaldekloe/part5 (v[^ ]+).*$|\1|p' adapters/part5/go.mod)" ]]; then
+    echo "FAIL part5 version: Dockerfile and go.mod disagree"
+    status=1
+fi
 exit "${status}"

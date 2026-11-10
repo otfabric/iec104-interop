@@ -9,9 +9,11 @@ Test IEC 104 libraries against established implementations including MZ Automati
 | `openmuc` | [OpenMUC j60870](https://www.openmuc.org/iec-60870-5-104/) 1.8.0 | Java | yes | yes | `ghcr.io/otfabric/iec104-interop-openmuc` |
 | `wendy512` | [wendy512/iec104](https://github.com/wendy512/iec104) v1.0.4 on [go-iecp5](https://github.com/wendy512/go-iecp5) v1.2.6 | Go | yes | yes | `ghcr.io/otfabric/iec104-interop-wendy512` |
 | `cbsigma` | [cB-Sigma/iec60870](https://github.com/cB-Sigma/iec60870) v0.3.0 | Go | yes | yes | `ghcr.io/otfabric/iec104-interop-cbsigma` |
+| `part5` | [pascaldekloe/part5](https://github.com/pascaldekloe/part5) v0.3.0 | Go | yes | yes | `ghcr.io/otfabric/iec104-interop-part5` |
 
 The stacks do not all do the same: wendy512 has no time-tagged commands, cannot
-receive a file and has no TLS or redundancy as a station, and only cbsigma has the
+receive a file and has no TLS or redundancy as a station, part5 has no file
+transfer, TLS or redundancy at all, and only cbsigma has the
 application-layer security of IEC 62351-5 (the A-Profile of
 IEC TS 60870-5-7), switched on with `--secure`. Each image says what it supports
 (`print-capabilities`); see [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
@@ -163,7 +165,8 @@ iec104-interop/
 │   ├── lib60870/        C adapter: Dockerfile, CMakeLists.txt, src/
 │   ├── openmuc/         Java adapter: Dockerfile, pom.xml, src/
 │   ├── wendy512/        Go adapter: Dockerfile, go.mod, *.go
-│   └── cbsigma/         Go adapter: Dockerfile, go.mod, *.go
+│   ├── cbsigma/         Go adapter: Dockerfile, go.mod, *.go
+│   └── part5/           Go adapter: Dockerfile, go.mod, *.go
 ├── fixtures/
 │   ├── schema/          JSON Schema of the fixture format
 │   └── baseline/        the baseline station

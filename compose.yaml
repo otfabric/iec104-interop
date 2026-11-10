@@ -41,3 +41,9 @@ services:
     image: ghcr.io/otfabric/iec104-interop-cbsigma:${IEC104_INTEROP_VERSION:-dev}
     ports:
       - "127.0.0.1:2407:2404"
+
+  part5:
+    <<: *server
+    image: ghcr.io/otfabric/iec104-interop-part5:${IEC104_INTEROP_VERSION:-dev}
+    ports:
+      - "127.0.0.1:2408:2404"

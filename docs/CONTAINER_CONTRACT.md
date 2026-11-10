@@ -79,7 +79,7 @@ Accepted by `server` and by every `client` operation. Times are in seconds.
 `1 <= w <= k <= 32767`, `0 < t2 < t1`. Whether `--t3 0` (idle test off) is
 accepted is adapter specific: lib60870 accepts it, OpenMUC requires
 `t3 >= t1`, wendy512 requires `t3 >= 1` and every timer at most 255 seconds, cbsigma
-requires `t3 >= 1`.
+requires `t3 >= 1`, part5 requires `t3 >= 1` and `t0`, `t1` and `t2` at most 255 seconds.
 A value the library cannot run with is a usage error, never replaced by
 another one. See [CAPABILITIES.md](CAPABILITIES.md).
 
