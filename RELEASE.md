@@ -27,6 +27,45 @@ manual workflow and no releases (`own/go-iec104/README.md`).
 
 ---
 
+## v0.6.0
+
+**Date:** 2026-11-10
+**Previous release:** v0.5.0
+
+### Added
+
+- The adapter `part5`, on [pascaldekloe/part5](https://github.com/pascaldekloe/part5) v0.3.0 (CC0-1.0, Go): a fifth independent implementation, in both roles, published as `ghcr.io/otfabric/iec104-interop-part5`. part5 is a toolkit. The APCI session engine, the ASDU header and every information element on the wire are part5's. The adapter supplies the station logic of the fixture and reads the control direction with part5's element types.
+- `make candidate-part5`, `make run-part5` (port 2408), the `part5` service in `compose.yaml`, and part5 in the daily Upstream check and in `manifest.json`.
+- `IEC104_INTEROP_DEBUG=1` makes the part5 image log every APDU part5 sends and receives to stderr.
+
+The container contract (1.3) and the fixtures are unchanged.
+
+### Coverage
+
+| Feature | lib60870 | openmuc | wendy512 | cbsigma | part5 |
+|---------|:--:|:--:|:--:|:--:|:--:|
+| Contract 1.0 operations, `groupInterrogation`, `pointQualityOnBitstring` | yes | yes | yes | yes | yes |
+| `timeTaggedCommands` | yes | yes | no | yes | yes |
+| `dataTransferEvents` | yes | yes | no | yes | yes |
+| File transfer, TLS, redundancy | yes | yes | partly | yes | no |
+| `--t3 0` | yes | no | no | no | no |
+
+The reasons for each "no" are in [docs/CAPABILITIES.md](docs/CAPABILITIES.md), footnotes 10 to 14 for part5.
+
+### Known upstream issues
+
+- part5 v0.3.0 keeps k + 1 I-frames unacknowledged ([pascaldekloe/part5#6](https://github.com/pascaldekloe/part5/issues/6), fix proposed in [pascaldekloe/part5#7](https://github.com/pascaldekloe/part5/pull/7), tracked in [#18](https://github.com/otfabric/iec104-interop/issues/18)). No reference enforces its side of k, so no case fails on it. More part5 findings are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+
+### Changed
+
+- `own/go-iec104` builds on go-iec104 v0.1.2, and its workflow runs the self-tests of the harness release its reference images come from (not part of the release images).
+
+### Evidence
+
+CI at a7bffee, amd64 and arm64: smoke lib60870 55/0, openmuc 55/0, wendy512 51/0, cbsigma 59/0, part5 49/0; interop over 25 pairings 3071 passed, 0 failed, 44 known upstream bugs (the read bug of j60870 1.8.0), 583 skipped.
+
+---
+
 ## v0.5.0
 
 **Date:** 2026-11-02
