@@ -126,7 +126,7 @@ jobs:
 
       - name: Pull the reference images of ${{ needs.version.outputs.harness }}
         run: |
-          for a in lib60870 openmuc wendy512 cbsigma; do
+          for a in lib60870 openmuc wendy512 cbsigma part5; do
             scripts/retry.sh docker pull --quiet "ghcr.io/otfabric/iec104-interop-${a}:${VERSION}"
             docker run --rm "ghcr.io/otfabric/iec104-interop-${a}:${VERSION}" print-capabilities \
               | jq -r --arg image "${a}:${VERSION}" '"- \($image): \(.upstream.name) \(.upstream.version)"' | tee -a "$GITHUB_STEP_SUMMARY"
@@ -138,7 +138,7 @@ jobs:
           set -o pipefail
           mkdir -p reports
           REPORT_DIR=reports scripts/smoke.sh otfabric
-          REPORT_DIR=reports scripts/interop.sh otfabric lib60870 openmuc wendy512 cbsigma 2>&1 | tee reports/interop.log
+          REPORT_DIR=reports scripts/interop.sh otfabric lib60870 openmuc wendy512 cbsigma part5 2>&1 | tee reports/interop.log
           python3 scripts/validate-documents.py reports
           grep -E '^\[(smoke|interop)\]' reports/interop.log | tee -a "$GITHUB_STEP_SUMMARY" || true
 
