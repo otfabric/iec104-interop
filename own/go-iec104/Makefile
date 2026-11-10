@@ -7,7 +7,7 @@
 IMAGE ?= ghcr.io/otfabric/iec104-interop-otfabric:dev
 # The harness release of the reference images to test against.
 VERSION ?= $(shell git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
-REFERENCES ?= lib60870 openmuc wendy512 cbsigma
+REFERENCES ?= lib60870 openmuc wendy512 cbsigma part5
 BASE_REGISTRY ?= docker.io/library
 
 # The latest go-iec104 release, as the workflow builds it.
