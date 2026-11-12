@@ -27,7 +27,7 @@ docker run -d --name go-iec104 -p 127.0.0.1:2404:2404 ghcr.io/otfabric/iec104-in
 until docker exec go-iec104 test -f /run/iec104-interop/ready; do sleep 0.1; done
 ```
 
-`<tag>` is a go-iec104 version such as `v0.1.1`, or `latest`, the newest one
+`<tag>` is a go-iec104 version such as `v0.1.2`, or `latest`, the newest one
 published. A rebuild of a version replaces its tag, so pin the digest if you need
 an exact build. The digest is in the summary of the
 [workflow run](https://github.com/otfabric/iec104-interop/actions/workflows/own-go-iec104.yml),
